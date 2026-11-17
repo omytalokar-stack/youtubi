@@ -6,6 +6,7 @@ import { createCorsMiddleware } from './config/cors.js';
 import youtubeRoutes from './routes/youtubeRoutes.js';
 import channelRoutes from './routes/channelRoutes.js';
 import automationRoutes from './routes/automationRoutes.js';
+import hisaRoutes from './routes/hisaRoutes.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -28,6 +29,7 @@ app.use((req, res, next) => {
 app.use('/api/youtube', youtubeRoutes);
 app.use('/api', channelRoutes);
 app.use('/api/automation', automationRoutes);
+app.use('/api/hisa', hisaRoutes);
 app.use((req, res) => res.status(404).json({ error: 'Route not found.' }));
 app.use((error, req, res, next) => {
   console.error(error);

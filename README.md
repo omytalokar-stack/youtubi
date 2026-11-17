@@ -14,7 +14,9 @@ Gemini generates eight motion-focused 9:16 scene prompts and aligned narration/s
 
 ## Automation
 
-Configure a cron provider to send `POST /api/automation/trigger` with `x-cron-secret: <CRON_SECRET>` (or the `?secret=` query parameter supported by cron-job.org). The worker checks due schedule slots in IST and handles at most one channel per request.
+Configure a cron provider to send `POST /api/automation/trigger` at least once per minute with `x-cron-secret: <CRON_SECRET>` (or the `?secret=` query parameter supported by cron-job.org). The worker checks due schedule slots in IST and handles at most one channel per request; repeated calls are needed to invoke the Hisa timeout fallback automatically.
+
+The Flow AI worker can poll `GET /api/hisa/next-job` using `x-hisa-secret: <CRON_SECRET>`. It receives a generated script and five animation prompts for the next due channel. Complete it with five MP4 files in the multipart `clips` field or five HTTPS `.mp4` URLs in JSON as `{ "clipUrls": ["...", "...", "...", "...", "..."] }` at `POST /api/hisa/complete-job/:jobId`. The API renders the animated clips with the generated Gemini voiceover and subtitles, then uploads the Short. The Hisa handoff window is 15 minutes from each channel's scheduled time by default; set `HISA_FALLBACK_WINDOW_MINUTES` to an integer from 1 to 1440 to change this. The scheduled trigger waits for Hisa during that window, then uses the existing local visual-generation pipeline as a fallback.
 
 `POST /api/automation/audit-analytics` is protected by the same secret and requires `{ "channelId": "..." }`. The dashboard's manual audit asks for that secret at run time; it is not embedded in the frontend bundle.
 

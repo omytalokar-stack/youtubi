@@ -33,6 +33,9 @@ export async function generateVoiceover(script, language, jobDir) {
   header.writeUInt32LE(data.length, 40);
   const fs = await import('node:fs/promises');
   await fs.writeFile(wav, Buffer.concat([header, data]));
-  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-i', wav, '-codec:a', 'libmp3lame', '-b:a', '128k', mp3], { timeout: 60000 });
+  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-y', '-i', wav,
+    '-codec:a', 'libmp3lame', '-b:a', '128k', mp3
+  ], { timeout: 60000, maxBuffer: 50 * 1024 * 1024 });
   return mp3;
 }

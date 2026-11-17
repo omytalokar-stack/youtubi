@@ -12,6 +12,7 @@ const FPS = 24;
 const FRAME_COUNT = Math.round(SCENE_DURATION * FPS);
 const TRANSITIONS = ['smoothleft', 'wipeleft', 'smoothup', 'dissolve', 'slideright', 'smoothdown', 'wiperight'];
 const OUTPUT_DURATION = SCENE_COUNT * SCENE_DURATION - (SCENE_COUNT - 1) * TRANSITION_DURATION;
+const FLOW_CLIP_COUNT = 5;
 
 export function createJobDirectory(channelId) {
   const safeId = channelId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -154,16 +155,22 @@ async function renderScene(asset, index, jobDir) {
   return outputPath;
 }
 
-function xfadeFilter(subtitleFile) {
+export function buildVideoSceneFilter(index, duration) {
+  return `[${index}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=${FPS},tpad=stop_mode=clone:stop_duration=${duration},trim=duration=${duration},settb=AVTB,setpts=PTS-STARTPTS,format=yuv420p[v${index}]`;
+}
+
+function xfadeFilter(subtitleFile, sceneCount = SCENE_COUNT, sceneDuration = SCENE_DURATION, videoInputs = false) {
   const filters = [];
-  for (let index = 0; index < SCENE_COUNT; index += 1) {
-    filters.push(`[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[v${index}]`);
+  for (let index = 0; index < sceneCount; index += 1) {
+    filters.push(videoInputs
+      ? buildVideoSceneFilter(index, sceneDuration)
+      : `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[v${index}]`);
   }
   let previous = 'v0';
-  for (let index = 1; index < SCENE_COUNT; index += 1) {
+  for (let index = 1; index < sceneCount; index += 1) {
     const output = `xf${index}`;
     const transition = TRANSITIONS[(index - 1) % TRANSITIONS.length];
-    const offset = (index * (SCENE_DURATION - TRANSITION_DURATION)).toFixed(2);
+    const offset = (index * (sceneDuration - TRANSITION_DURATION)).toFixed(2);
     filters.push(`[${previous}][v${index}]xfade=transition=${transition}:duration=${TRANSITION_DURATION}:offset=${offset}[${output}]`);
     previous = output;
   }
@@ -173,29 +180,40 @@ function xfadeFilter(subtitleFile) {
 }
 
 export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats, jobDir }) {
-  if (!Array.isArray(sceneAssets) || sceneAssets.length !== SCENE_COUNT) {
-    throw new TypeError(`Exactly ${SCENE_COUNT} scene assets are required.`);
+  const isFlowVideo = Array.isArray(sceneAssets) && sceneAssets.length === FLOW_CLIP_COUNT &&
+    sceneAssets.every((asset) => asset?.type === 'video' && typeof asset.path === 'string' && fs.existsSync(asset.path));
+  if (!isFlowVideo && (!Array.isArray(sceneAssets) || sceneAssets.length !== SCENE_COUNT)) {
+    throw new TypeError(`Exactly ${SCENE_COUNT} generated scenes or ${FLOW_CLIP_COUNT} Flow AI video clips are required.`);
   }
   const subtitleFile = path.join(jobDir, 'subtitles.ass');
   const output = path.join(jobDir, 'final_short.mp4');
   fs.writeFileSync(subtitleFile, buildAss(subtitleBeats, hook), 'utf8');
   const segmentPaths = [];
-  for (let index = 0; index < sceneAssets.length; index += 1) {
-    segmentPaths.push(await renderScene(sceneAssets[index], index, jobDir));
+  if (!isFlowVideo) {
+    for (let index = 0; index < sceneAssets.length; index += 1) {
+      segmentPaths.push(await renderScene(sceneAssets[index], index, jobDir));
+    }
   }
 
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-filter_complex_threads', '1'];
-  for (const segmentPath of segmentPaths) args.push('-threads', '1', '-i', segmentPath);
+  const sceneCount = isFlowVideo ? FLOW_CLIP_COUNT : sceneAssets.length;
+  const sceneDuration = isFlowVideo
+    ? (OUTPUT_DURATION + (sceneCount - 1) * TRANSITION_DURATION) / sceneCount
+    : SCENE_DURATION;
+  for (let index = 0; index < sceneCount; index += 1) {
+    const segmentPath = isFlowVideo ? sceneAssets[index].path : segmentPaths[index];
+    args.push('-threads', '1', '-i', segmentPath);
+  }
   args.push('-threads', '1', '-i', audioPath);
   const hasBgm = Boolean(process.env.OPTIONAL_BGM_PATH && fs.existsSync(process.env.OPTIONAL_BGM_PATH));
   if (hasBgm) args.push('-stream_loop', '-1', '-threads', '1', '-i', process.env.OPTIONAL_BGM_PATH);
 
-  const voiceInput = SCENE_COUNT;
+  const voiceInput = sceneCount;
   const audioFilter = hasBgm
     ? `[${voiceInput}:a]volume=1[voice];[${voiceInput + 1}:a]volume=0.126[music];[voice][music]amix=inputs=2:duration=first[a]`
     : `[${voiceInput}:a]anull[a]`;
   args.push(
-    '-filter_complex', `${audioFilter};${xfadeFilter(subtitleFile)}`,
+    '-filter_complex', `${audioFilter};${xfadeFilter(subtitleFile, sceneCount, sceneDuration, isFlowVideo)}`,
     '-map', '[v]', '-map', '[a]', '-shortest',
     '-c:v', 'libx264', '-threads', '1', '-preset', 'ultrafast',
     '-crf', '26', '-pix_fmt', 'yuv420p', '-r', String(FPS),
