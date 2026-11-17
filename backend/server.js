@@ -1,15 +1,15 @@
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
 import mongoose from 'mongoose';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
+import { createCorsMiddleware } from './config/cors.js';
 import youtubeRoutes from './routes/youtubeRoutes.js';
 import channelRoutes from './routes/channelRoutes.js';
 import automationRoutes from './routes/automationRoutes.js';
 
 const app = express();
 app.disable('x-powered-by');
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173' }));
+app.use(createCorsMiddleware());
 app.use(express.json({ limit: '1mb' }));
 app.get('/api/health', (req, res) => {
   const connected = mongoose.connection.readyState === 1;

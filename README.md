@@ -6,7 +6,7 @@ A standalone, multi-channel YouTube Shorts studio. The React app is in `frontend
 
 1. Copy `backend/.env.example` to `backend/.env` and configure a reachable MongoDB URI, Google OAuth, Gemini, and a 32-byte `TOKEN_ENCRYPTION_KEY` (64 hex characters or base64). Set `OAUTH_STATE_SECRET` and `CRON_SECRET` to independent, high-entropy secrets. The backend refuses temporary database storage so connected-channel credentials survive restarts.
 2. In Google Cloud, enable YouTube Data API v3 and YouTube Analytics API v2, configure the OAuth consent screen and the redirect URI exactly as `OAUTH_REDIRECT_URI`, and use the read-only, upload, and analytics scopes in the example.
-3. Configure `frontend/.env` from `frontend/.env.example`. The backend's `FRONTEND_ORIGIN` and `PUBLIC_APP_URL` must match the frontend URL.
+3. Configure `frontend/.env` from `frontend/.env.example`. Set the backend's `FRONTEND_ORIGIN` to a comma-separated list of exact browser origins (for example, `https://your-project.vercel.app,http://localhost:5173`) and set `PUBLIC_APP_URL` to the deployed frontend URL. In Vercel, set `VITE_API_URL` to `https://<your-render-service>.onrender.com/api`; Vite reads it during the build, so redeploy after changing it. The Google OAuth redirect URI must remain the backend's `/api/youtube/oauth2callback` URL.
 4. Install dependencies in the root, `backend/`, and `frontend/` using `npm install`, then run `npm run dev` from this directory.
 5. Install FFmpeg and ffprobe on the backend host. The renderer defaults to the `ffmpeg` executable and needs FFmpeg's `libx264`, AAC, and subtitles (libass) support.
 
