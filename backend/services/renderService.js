@@ -137,11 +137,12 @@ async function renderProceduralScene(asset, outputPath, index) {
     `n=4:type=radial:speed=${0.08 + (index % 4) * 0.025}`
   ].join(':');
   await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', [
+    '-hide_banner', '-loglevel', 'error',
     '-y', '-filter_threads', '1', '-f', 'lavfi', '-i', source,
     '-vf', proceduralFilter(asset, index),
     '-frames:v', String(FRAME_COUNT),
     ...encodeArgs(outputPath)
-  ], { timeout: 120000, maxBuffer: 1024 * 1024 });
+  ], { timeout: 120000, maxBuffer: 50 * 1024 * 1024 });
 }
 
 async function renderScene(asset, index, jobDir) {
@@ -183,7 +184,7 @@ export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats,
     segmentPaths.push(await renderScene(sceneAssets[index], index, jobDir));
   }
 
-  const args = ['-y', '-filter_complex_threads', '1'];
+  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-filter_complex_threads', '1'];
   for (const segmentPath of segmentPaths) args.push('-threads', '1', '-i', segmentPath);
   args.push('-threads', '1', '-i', audioPath);
   const hasBgm = Boolean(process.env.OPTIONAL_BGM_PATH && fs.existsSync(process.env.OPTIONAL_BGM_PATH));
@@ -200,6 +201,6 @@ export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats,
     '-crf', '26', '-pix_fmt', 'yuv420p', '-r', String(FPS),
     '-c:a', 'aac', '-b:a', '128k', output
   );
-  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', args, { timeout: 300000, maxBuffer: 1024 * 1024 });
+  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', args, { timeout: 300000, maxBuffer: 50 * 1024 * 1024 });
   return output;
 }
