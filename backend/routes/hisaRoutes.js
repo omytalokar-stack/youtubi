@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { isIP } from 'node:net';
 import mongoose from 'mongoose';
+import ChannelProfile from '../models/ChannelProfile.js';
 import HisaJob from '../models/HisaJob.js';
 import { generateShort } from '../services/geminiService.js';
 import {
@@ -19,6 +20,7 @@ import {
   getHisaFallbackWindowMs,
   getNextDueChannel,
   getScheduleDueAt,
+  getTodayIST,
   publishHisaJob
 } from '../services/queueWorkerService.js';
 
@@ -55,8 +57,6 @@ function inputError(message) {
   return error;
 }
 
-router.use(requireHisaSecret);
-
 function animationPrompts(scenePrompts) {
   return Array.from({ length: FLOW_PROMPT_COUNT }, (_, index) => {
     const start = Math.floor(index * scenePrompts.length / FLOW_PROMPT_COUNT);
@@ -80,8 +80,42 @@ function jobResponse(job) {
   };
 }
 
+router.post('/enqueue-test', async (req, res, next) => {
+  try {
+    const channelId = typeof req.body?.channelId === 'string' ? req.body.channelId.trim() : '';
+    if (!channelId) return res.status(400).json({ error: 'channelId is required.' });
+    const profile = await ChannelProfile.findOne({ channelId }).lean();
+    if (!profile) return res.status(404).json({ error: 'Channel profile not found.' });
+
+    const generated = await generateShort(channelId);
+    const today = getTodayIST();
+    const job = await HisaJob.create({
+      channelId,
+      scheduledDateIST: `${today}:test:${randomUUID()}`,
+      dueAt: new Date(),
+      publishDateIST: today,
+      isTest: true,
+      title: generated.title,
+      hook: generated.hook,
+      script: generated.script,
+      description: generated.description,
+      tags: generated.tags,
+      subtitleBeats: generated.subtitleBeats,
+      animationPrompts: animationPrompts(generated.scenePrompts)
+    });
+    return res.status(202).json({ ok: true, jobId: job._id, status: 'queued' });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.use(requireHisaSecret);
+
 router.get('/next-job', async (req, res, next) => {
   try {
+    const testJob = await HisaJob.findOne({ isTest: true, status: 'pending' }).sort({ createdAt: 1 });
+    if (testJob) return res.json({ job: jobResponse(testJob) });
+
     const nextDue = await getNextDueChannel();
     if (!nextDue) return res.json({ job: null });
     const { profile, today, dueAt } = nextDue;
@@ -273,7 +307,7 @@ router.post('/complete-job/:jobId', parseMultipartClips, async (req, res, next) 
             urls.length && urls.length !== FLOW_PROMPT_COUNT || !files.length && !urls.length) {
           statusCode = 400;
           responseBody = { error: 'Provide exactly five MP4 files or five MP4 clipUrls.' };
-        } else if (Date.now() - job.dueAt.getTime() >= getHisaFallbackWindowMs()) {
+        } else if (!job.isTest && Date.now() - job.dueAt.getTime() >= getHisaFallbackWindowMs()) {
           statusCode = 409;
           responseBody = { error: 'The Hisa fallback window has elapsed.' };
         } else {

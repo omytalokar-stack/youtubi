@@ -7,6 +7,7 @@ test('all Hisa endpoints require the CRON_SECRET in x-hisa-secret', async (t) =>
   const previousSecret = process.env.CRON_SECRET;
   process.env.CRON_SECRET = 'test-hisa-secret';
   const app = express();
+  app.use(express.json());
   app.use('/api/hisa', hisaRoutes);
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
@@ -23,4 +24,11 @@ test('all Hisa endpoints require the CRON_SECRET in x-hisa-secret', async (t) =>
 
   const completeJob = await fetch(`${baseUrl}/complete-job/not-a-job`, { method: 'POST' });
   assert.equal(completeJob.status, 401);
+
+  const enqueueTest = await fetch(`${baseUrl}/enqueue-test`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}'
+  });
+  assert.equal(enqueueTest.status, 400);
 });

@@ -4,6 +4,8 @@ const HisaJobSchema = new mongoose.Schema({
   channelId: { type: String, required: true, index: true },
   scheduledDateIST: { type: String, required: true },
   dueAt: { type: Date, required: true },
+  publishDateIST: { type: String, default: '' },
+  isTest: { type: Boolean, default: false, index: true },
   status: {
     type: String,
     enum: ['pending', 'processing', 'completed', 'failed', 'fallback'],

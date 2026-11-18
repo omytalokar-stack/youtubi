@@ -22,6 +22,10 @@ function istSchedule(date = new Date()) {
   return { today: `${value('year')}-${value('month')}-${value('day')}`, hour: Number(value('hour')), minute: Number(value('minute')) };
 }
 
+export function getTodayIST() {
+  return istSchedule().today;
+}
+
 export function getHisaFallbackWindowMs() {
   const configuredMinutes = process.env.HISA_FALLBACK_WINDOW_MINUTES;
   if (configuredMinutes === undefined || configuredMinutes === '') return DEFAULT_HISA_FALLBACK_WINDOW_MS;
@@ -154,7 +158,7 @@ export async function publishHisaJob(job, clipPaths) {
     tags: job.tags,
     subtitleBeats: job.subtitleBeats
   };
-  return publishChannel(job.channelId, profile, job.scheduledDateIST, {
+  return publishChannel(job.channelId, profile, job.publishDateIST || job.scheduledDateIST, {
     generated,
     clipPaths,
     hisaJobId: job._id
