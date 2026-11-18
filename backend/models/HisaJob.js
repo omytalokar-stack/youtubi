@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { getFlowScenesCount } from '../services/hisaScenePrompts.js';
 
 const HisaJobSchema = new mongoose.Schema({
   channelId: { type: String, required: true, index: true },
@@ -18,7 +19,16 @@ const HisaJobSchema = new mongoose.Schema({
   description: { type: String, default: '' },
   tags: { type: [String], default: [] },
   subtitleBeats: { type: [String], required: true },
-  animationPrompts: { type: [String], required: true },
+  scenePrompts: {
+    type: [String],
+    required: true,
+    default: undefined,
+    validate: {
+      validator: (prompts) => Array.isArray(prompts) && prompts.length === getFlowScenesCount(),
+      message: 'scenePrompts must match FLOW_SCENES_COUNT.'
+    }
+  },
+  animationPrompts: { type: [String], default: undefined },
   processingAt: { type: Date },
   completedAt: { type: Date },
   videoId: { type: String, default: '' },

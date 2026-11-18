@@ -156,7 +156,8 @@ export async function publishHisaJob(job, clipPaths) {
     script: job.script,
     description: job.description,
     tags: job.tags,
-    subtitleBeats: job.subtitleBeats
+    subtitleBeats: job.subtitleBeats,
+    scenePrompts: job.scenePrompts
   };
   return publishChannel(job.channelId, profile, job.publishDateIST || job.scheduledDateIST, {
     generated,

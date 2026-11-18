@@ -23,9 +23,10 @@ import {
   getTodayIST,
   publishHisaJob
 } from '../services/queueWorkerService.js';
+import { createHisaScenePrompts, getFlowScenesCount } from '../services/hisaScenePrompts.js';
 
 const router = Router();
-const FLOW_PROMPT_COUNT = 5;
+const FLOW_PROMPT_COUNT = getFlowScenesCount();
 const MAX_CLIP_SIZE = 100 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
 
@@ -57,26 +58,12 @@ function inputError(message) {
   return error;
 }
 
-function animationPrompts(scenePrompts) {
-  return Array.from({ length: FLOW_PROMPT_COUNT }, (_, index) => {
-    const start = Math.floor(index * scenePrompts.length / FLOW_PROMPT_COUNT);
-    const end = Math.floor((index + 1) * scenePrompts.length / FLOW_PROMPT_COUNT);
-    const moments = scenePrompts.slice(start, end).join(' NEXT MOMENT: ');
-    return `Create one continuous 9:16 vertical animated video that progresses through these story moments: ${moments}`;
-  });
-}
-
 function jobResponse(job) {
   return {
-    jobId: job._id,
-    channelId: job.channelId,
-    title: job.title,
-    hook: job.hook,
-    script: job.script,
-    description: job.description,
-    tags: job.tags,
-    subtitleBeats: job.subtitleBeats,
-    animationPrompts: job.animationPrompts
+    jobId: String(job._id),
+    scenePrompts: Array.isArray(job.scenePrompts) && job.scenePrompts.length
+      ? job.scenePrompts
+      : createHisaScenePrompts(job.animationPrompts)
   };
 }
 
@@ -101,7 +88,7 @@ router.post('/enqueue-test', async (req, res, next) => {
       description: generated.description,
       tags: generated.tags,
       subtitleBeats: generated.subtitleBeats,
-      animationPrompts: animationPrompts(generated.scenePrompts)
+      scenePrompts: createHisaScenePrompts(generated.scenePrompts)
     });
     return res.status(202).json({ ok: true, jobId: job._id, status: 'queued' });
   } catch (error) {
@@ -141,7 +128,7 @@ router.get('/next-job', async (req, res, next) => {
       description: generated.description,
       tags: generated.tags,
       subtitleBeats: generated.subtitleBeats,
-      animationPrompts: animationPrompts(generated.scenePrompts)
+      scenePrompts: createHisaScenePrompts(generated.scenePrompts)
     });
     return res.json({ job: jobResponse(job) });
   } catch (error) {
@@ -306,7 +293,7 @@ router.post('/complete-job/:jobId', parseMultipartClips, async (req, res, next) 
         if (files.length && urls.length || files.length && files.length !== FLOW_PROMPT_COUNT ||
             urls.length && urls.length !== FLOW_PROMPT_COUNT || !files.length && !urls.length) {
           statusCode = 400;
-          responseBody = { error: 'Provide exactly five MP4 files or five MP4 clipUrls.' };
+          responseBody = { error: `Provide exactly ${FLOW_PROMPT_COUNT} MP4 files or ${FLOW_PROMPT_COUNT} MP4 clipUrls.` };
         } else if (!job.isTest && Date.now() - job.dueAt.getTime() >= getHisaFallbackWindowMs()) {
           statusCode = 409;
           responseBody = { error: 'The Hisa fallback window has elapsed.' };
