@@ -2,6 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { api } from '../lib/api';
 import type { Brain, Channel, Profile, Stats } from '../types';
 
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+};
+
 type AppContextValue = {
   channels: Channel[];
   channelId: string;
@@ -11,7 +16,11 @@ type AppContextValue = {
   loading: boolean;
   error: string;
   notice: string;
+  canInstallPwa: boolean;
+  isPwaInstalled: boolean;
+  isIosSafari: boolean;
   setChannelId: (id: string) => void;
+  installPwa: () => Promise<void>;
   refresh: () => Promise<void>;
   syncAnalytics: () => Promise<Stats>;
   updateSyncedStats: (channelId: string, stats: Stats) => void;
@@ -31,6 +40,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isPwaInstalled, setIsPwaInstalled] = useState(() => (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true
+  ));
+  const isIosSafari = useMemo(() => {
+    const userAgent = navigator.userAgent;
+    const isIos = /iphone|ipad|ipod/i.test(userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    return isIos && /safari/i.test(userAgent) && !/(crios|fxios|edgios|opios)/i.test(userAgent);
+  }, []);
+
+  useEffect(() => {
+    const displayMode = window.matchMedia('(display-mode: standalone)');
+    const updateInstalled = () => {
+      setIsPwaInstalled(displayMode.matches || (navigator as Navigator & { standalone?: boolean }).standalone === true);
+    };
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setDeferredPrompt(event as BeforeInstallPromptEvent);
+    };
+    const onAppInstalled = () => {
+      setDeferredPrompt(null);
+      setIsPwaInstalled(true);
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+    window.addEventListener('appinstalled', onAppInstalled);
+    displayMode.addEventListener('change', updateInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', onAppInstalled);
+      displayMode.removeEventListener('change', updateInstalled);
+    };
+  }, []);
+
+  const installPwa = useCallback(async () => {
+    if (!deferredPrompt) return;
+    await deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    setDeferredPrompt(null);
+    if (outcome === 'accepted') setIsPwaInstalled(true);
+  }, [deferredPrompt]);
+
   const setChannelId = (id: string) => {
     localStorage.setItem('dimag-selected-channel', id);
     setChannelIdState(id);
@@ -100,8 +152,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({
     channels, channelId, profile, brain, stats, loading, error, notice,
-    setChannelId, refresh, syncAnalytics, updateSyncedStats, saveProfile, saveSchedule, setNotice
-  }), [channels, channelId, profile, brain, stats, loading, error, notice, refresh, syncAnalytics, updateSyncedStats, saveProfile, saveSchedule]);
+    canInstallPwa: Boolean(deferredPrompt), isPwaInstalled, isIosSafari,
+    setChannelId, installPwa, refresh, syncAnalytics, updateSyncedStats, saveProfile, saveSchedule, setNotice
+  }), [channels, channelId, profile, brain, stats, loading, error, notice, deferredPrompt, isPwaInstalled, isIosSafari, installPwa, refresh, syncAnalytics, updateSyncedStats, saveProfile, saveSchedule]);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

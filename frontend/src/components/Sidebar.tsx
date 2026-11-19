@@ -23,7 +23,7 @@ export function Sidebar({ channels, channelId, onChannelChange, onTabChange, act
     <aside className="sidebar">
       <a className="brand" href="#" onClick={(event) => event.preventDefault()}>
         <span className="brand-mark"><BrainCircuit size={21} /></span>
-        <span><strong>dimag<span className="brand-ai">.ai</span></strong><small>CREATOR STUDIO <b>V2</b></small></span>
+        <span><strong>dimag</strong><small>CREATOR STUDIO</small></span>
       </a>
       <div className="workspace-label">WORKSPACE</div>
       <div className="channel-picker-wrap">
@@ -46,7 +46,7 @@ export function Sidebar({ channels, channelId, onChannelChange, onTabChange, act
         </button>)}
       </nav>
       <div className="sidebar-bottom">
-        <div className="plan-card"><div className="plan-icon"><Clapperboard size={17} /></div><div><strong>V2 Creator Studio</strong><small>One channel at a time</small></div><span className="plan-dot" /></div>
+        <div className="plan-card"><div className="plan-icon"><Clapperboard size={17} /></div><div><strong>Creator Studio</strong><small>One channel at a time</small></div><span className="plan-dot" /></div>
         <button className="theme-toggle" onClick={onToggleTheme}>{dark ? <Sun size={16} /> : <Moon size={16} />}<span>{dark ? 'Light appearance' : 'Dark appearance'}</span><kbd>{dark ? '☼' : '◐'}</kbd></button>
         <div className="sidebar-footer"><span className="online-dot" /> Systems operational <span>v2.0.0</span></div>
       </div>

@@ -1,12 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { ArrowUpRight, Check, Clock3, Copy, ExternalLink, KeyRound, Server, ShieldCheck, Youtube } from 'lucide-react';
+import { ArrowUpRight, Check, Clock3, Copy, Download, ExternalLink, KeyRound, Server, Share2, ShieldCheck, Smartphone, Youtube } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../lib/api';
 
 const WEBHOOK_URL = 'https://youtubi.onrender.com/api/automation/trigger';
 
 export function Settings() {
-  const { channels, channelId, profile, refresh, saveSchedule, setNotice } = useApp();
+  const { channels, channelId, profile, refresh, saveSchedule, setNotice, canInstallPwa, isPwaInstalled, isIosSafari, installPwa } = useApp();
   const [connecting, setConnecting] = useState(false);
   const [autoPublishEnabled, setAutoPublishEnabled] = useState(true);
   const [publishTimeIst, setPublishTimeIst] = useState('16:00');
@@ -48,10 +48,20 @@ export function Settings() {
       setNotice('Could not copy the webhook URL. Select and copy it manually.');
     }
   }
+  async function requestInstall() {
+    try {
+      await installPwa();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not open the dimag install prompt.');
+    }
+  }
 
   return <div className="page-stack">
     <div className="page-heading-row"><div><div className="eyebrow"><span className="eyebrow-line" /> PREFERENCES & ACCESS</div><h1>Studio settings<span className="heading-period">.</span></h1><p className="page-subtitle">Manage the channel connections and infrastructure behind your creator studio.</p></div><button className="button button-secondary" onClick={() => void refresh()}>Refresh connections</button></div>
     <div className="settings-layout">
+      <section className="panel settings-panel install-panel"><div className="section-heading"><div><span className="section-kicker">DIMAG FOR YOUR DEVICE</span><h2>Install Mobile App (PWA)</h2></div><Smartphone className="setting-icon" size={19} /></div><p className="settings-copy">Add dimag to your home screen for a fast, app-like experience on this device.</p>
+        {isPwaInstalled ? <span className="installed-badge" role="status"><Check size={14} /> Installed on this device</span> : isIosSafari ? <div className="ios-install-guide"><strong><Share2 size={15} /> Add dimag to your Home Screen</strong><ol><li>Tap the Share button in Safari.</li><li>Choose <strong>Add to Home Screen</strong>.</li><li>Tap <strong>Add</strong> to finish.</li></ol></div> : canInstallPwa ? <button className="button button-primary install-button" onClick={() => void requestInstall()}><Download size={16} /> Install dimag App</button> : <p className="install-unavailable">Installation will be available from your browser when this device supports it.</p>}
+      </section>
       <section className="panel settings-panel"><div className="section-heading"><div><span className="section-kicker">YOUTUBE CONNECTION</span><h2>Your connected channels</h2></div><Youtube className="setting-icon youtube-icon" size={19} /></div><p className="settings-copy">Channels have separate creative blueprints and learning memory. Add another Google account or brand channel at any time.</p>
         <div className="connected-list">{channels.map((channel) => <div className="connected-channel" key={channel.channelId}><img src={channel.thumbnailUrl || ''} alt="" /><span><strong>{channel.channelTitle}</strong><small>{channel.channelId}</small></span><span className="connected-status"><Check size={13} /> CONNECTED</span></div>)}{channels.length === 0 && <div className="connected-empty"><span className="empty-icon"><Youtube size={20} /></span><strong>No channels connected</strong><span>Authorize YouTube to begin setting up your studio.</span></div>}</div>
         <button className="button button-primary connect-button" onClick={connect} disabled={connecting}><Youtube size={16} />{connecting ? 'Opening Google…' : 'Connect YouTube channel'}<ArrowUpRight size={15} /></button>
