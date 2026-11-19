@@ -8,7 +8,10 @@ const execFileAsync = promisify(execFile);
 const SCENE_COUNT = 8;
 const SCENE_DURATION = 2.75;
 const TRANSITION_DURATION = 0.18;
-const FPS = 24;
+export const OUTPUT_WIDTH = 720;
+export const OUTPUT_HEIGHT = 1280;
+export const FPS = 24;
+export const FFMPEG_TIMEOUT_MS = 480000;
 const FRAME_COUNT = Math.round(SCENE_DURATION * FPS);
 const TRANSITIONS = ['smoothleft', 'wipeleft', 'smoothup', 'dissolve', 'slideright', 'smoothdown', 'wiperight'];
 const OUTPUT_DURATION = SCENE_COUNT * SCENE_DURATION - (SCENE_COUNT - 1) * TRANSITION_DURATION;
@@ -82,20 +85,22 @@ function encodeArgs(outputPath) {
     '-preset', 'ultrafast',
     '-crf', '26',
     '-pix_fmt', 'yuv420p',
+    '-s', `${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}`,
+    '-r', String(FPS),
     '-an',
     outputPath
   ];
 }
 
 const PALETTES = [
-  { c0: '0x070916', c1: '0x31104f', c2: '0x0b3450', c3: '0x11182d', beam: '0x5cf4ff', accent: '0xff43c8' },
-  { c0: '0x12070b', c1: '0x6a1e16', c2: '0x422008', c3: '0x1b1019', beam: '0xffb52e', accent: '0xff4268' },
-  { c0: '0x04111b', c1: '0x064c68', c2: '0x12356c', c3: '0x091326', beam: '0x42f6ef', accent: '0x66a4ff' },
-  { c0: '0x07130d', c1: '0x1d582e', c2: '0x264b58', c3: '0x101a22', beam: '0x78ff9c', accent: '0xd7ff4f' },
-  { c0: '0x10091d', c1: '0x44206c', c2: '0x152d67', c3: '0x111126', beam: '0x9a7cff', accent: '0xff62a8' },
-  { c0: '0x0d111b', c1: '0x344452', c2: '0x58401f', c3: '0x171526', beam: '0xffdb65', accent: '0x58e6ff' },
-  { c0: '0x0c0715', c1: '0x4b1641', c2: '0x5b2820', c3: '0x17101d', beam: '0xff5b82', accent: '0xffcf5a' },
-  { c0: '0x07121d', c1: '0x173b6d', c2: '0x1f605f', c3: '0x0b1725', beam: '0x57f7d8', accent: '0x6e8dff' }
+  { c0: '0x070916', beam: '0x5cf4ff', accent: '0xff43c8' },
+  { c0: '0x12070b', beam: '0xffb52e', accent: '0xff4268' },
+  { c0: '0x04111b', beam: '0x42f6ef', accent: '0x66a4ff' },
+  { c0: '0x07130d', beam: '0x78ff9c', accent: '0xd7ff4f' },
+  { c0: '0x10091d', beam: '0x9a7cff', accent: '0xff62a8' },
+  { c0: '0x0d111b', beam: '0xffdb65', accent: '0x58e6ff' },
+  { c0: '0x0c0715', beam: '0xff5b82', accent: '0xffcf5a' },
+  { c0: '0x07121d', beam: '0x57f7d8', accent: '0x6e8dff' }
 ];
 
 function paletteForScene(asset, index) {
@@ -107,50 +112,43 @@ function paletteForScene(asset, index) {
   return PALETTES[index % PALETTES.length];
 }
 
-function proceduralFilter(asset, index) {
+export function buildProceduralFilter(asset, index) {
   const palette = paletteForScene(asset, index);
-  const phase = (index * 0.73).toFixed(2);
-  const filters = [
-    `drawbox=x='280+380*sin(t*3+${phase})':y=0:w=170:h=1422:color=${palette.beam}@0.16:t=fill`,
-    `drawbox=x='320+250*cos(t*4+${phase})':y=0:w=54:h=1422:color=${palette.accent}@0.12:t=fill`,
-    `drawbox=x='280+180*sin(t*2.2+${phase})':y='250+160*cos(t*2.8+${phase})':w=260:h=260:color=${palette.accent}@0.76:t=9`,
-    `drawbox=x='350+180*cos(t*2.5+${phase})':y='900+200*sin(t*3.1+${phase})':w=220:h=220:color=${palette.beam}@0.74:t=8`,
-    `drawbox=x='400+300*sin(t*4+${phase})':y='700+500*cos(t*3+${phase})':w=9:h=9:color=${palette.beam}@0.92:t=fill`,
-    `drawbox=x='400+300*cos(t*5+${phase})':y='700+500*sin(t*4+${phase})':w=7:h=7:color=${palette.accent}@0.94:t=fill`,
-    `drawbox=x='400+350*sin(t*3+${phase})':y='710+500*cos(t*5+${phase})':w=8:h=8:color=${palette.beam}@0.9:t=fill`,
-    `drawbox=x='400+250*cos(t*4+${phase})':y='710+500*sin(t*7+${phase})':w=6:h=6:color=${palette.accent}@0.9:t=fill`,
-    `rotate='0.012*sin(t*3+${phase})':c=black`,
-    `zoompan=z='min(zoom+0.002,1.14)':x='(iw-iw/zoom)*(0.5+0.48*sin(on/7+${phase}))':y='(ih-ih/zoom)*(0.5+0.12*sin(on/12+${phase}))':d=1:s=720x1280:fps=${FPS}`,
-    'vignette=PI/5:eval=frame',
-    'eq=contrast=1.12:saturation=1.28',
+  const accentY = 330 + (index % 4) * 32;
+  return [
+    `drawbox=x=88:y=${accentY}:w=544:h=360:color=${palette.accent}@0.18:t=fill`,
+    `drawbox=x=64:y=258:w=592:h=8:color=${palette.beam}@0.8:t=fill`,
+    `drawbox=x=64:y=1014:w=592:h=8:color=${palette.beam}@0.8:t=fill`,
     'setsar=1',
     'format=yuv420p'
-  ];
-  return filters.join(',');
+  ].join(',');
 }
 
-async function renderProceduralScene(asset, outputPath, index) {
+export function buildSceneFfmpegArgs(outputPath, asset, index) {
   const palette = paletteForScene(asset, index);
-  const source = [
-    `gradients=s=800x1422:r=${FPS}:d=${SCENE_DURATION}`,
-    `c0=${palette.c0}:c1=${palette.c1}:c2=${palette.c2}:c3=${palette.c3}`,
-    `n=4:type=radial:speed=${0.08 + (index % 4) * 0.025}`
-  ].join(':');
-  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', [
+  const source = `color=c=${palette.c0}:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}:d=${SCENE_DURATION}`;
+  return [
     '-hide_banner', '-loglevel', 'error',
-    '-y', '-filter_threads', '1', '-f', 'lavfi', '-i', source,
-    '-vf', proceduralFilter(asset, index),
+    '-y', '-filter_threads', '1', '-threads', '1', '-f', 'lavfi', '-i', source,
+    '-vf', buildProceduralFilter(asset, index),
     '-frames:v', String(FRAME_COUNT),
     ...encodeArgs(outputPath)
-  ], { timeout: 120000, maxBuffer: 50 * 1024 * 1024 });
+  ];
 }
 
-async function renderScene(asset, index, jobDir) {
-  const outputPath = path.join(jobDir, `segment_${index}.mp4`);
+async function renderProceduralScene(asset, outputPath, index, signal) {
+  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', buildSceneFfmpegArgs(outputPath, asset, index), {
+    timeout: FFMPEG_TIMEOUT_MS,
+    maxBuffer: 50 * 1024 * 1024,
+    signal
+  });
+}
+
+async function renderScene(asset, index, outputPath, signal) {
   if (asset?.type !== 'procedural' || typeof asset.prompt !== 'string' || !asset.prompt.trim()) {
     throw new TypeError(`Scene ${index} is not a valid procedural scene.`);
   }
-  await renderProceduralScene(asset, outputPath, index);
+  await renderProceduralScene(asset, outputPath, index, signal);
   return outputPath;
 }
 
@@ -168,31 +166,22 @@ function xfadeFilter(subtitleFile, sceneCount = SCENE_COUNT, sceneDuration = SCE
     previous = output;
   }
   const subtitleFilterPath = subtitleFile.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
-  filters.push(`[${previous}]fps=${FPS},format=yuv420p,subtitles='${subtitleFilterPath}'[v]`);
+  filters.push(`[${previous}]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:flags=fast_bilinear,fps=${FPS},format=yuv420p,subtitles='${subtitleFilterPath}'[v]`);
   return filters.join(';');
 }
 
-export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats, jobDir }) {
-  if (!Array.isArray(sceneAssets) || sceneAssets.length !== SCENE_COUNT) {
-    throw new TypeError(`Exactly ${SCENE_COUNT} generated scenes are required.`);
+export function buildFinalRenderArgs({ segmentPaths, audioPath, hasBgm, bgmPath, subtitleFile, outputPath }) {
+  if (!Array.isArray(segmentPaths) || segmentPaths.length !== SCENE_COUNT) {
+    throw new TypeError(`Exactly ${SCENE_COUNT} rendered scene clips are required.`);
   }
-  const subtitleFile = path.join(jobDir, 'subtitles.ass');
-  const output = path.join(jobDir, 'final_short.mp4');
-  fs.writeFileSync(subtitleFile, buildAss(subtitleBeats, hook), 'utf8');
-  const segmentPaths = [];
-  for (let index = 0; index < sceneAssets.length; index += 1) {
-    segmentPaths.push(await renderScene(sceneAssets[index], index, jobDir));
-  }
-
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-filter_complex_threads', '1'];
-  const sceneCount = sceneAssets.length;
+  const sceneCount = segmentPaths.length;
   const sceneDuration = SCENE_DURATION;
   for (let index = 0; index < sceneCount; index += 1) {
     args.push('-threads', '1', '-i', segmentPaths[index]);
   }
   args.push('-threads', '1', '-i', audioPath);
-  const hasBgm = Boolean(process.env.OPTIONAL_BGM_PATH && fs.existsSync(process.env.OPTIONAL_BGM_PATH));
-  if (hasBgm) args.push('-stream_loop', '-1', '-threads', '1', '-i', process.env.OPTIONAL_BGM_PATH);
+  if (hasBgm) args.push('-stream_loop', '-1', '-threads', '1', '-i', bgmPath);
 
   const voiceInput = sceneCount;
   const audioFilter = hasBgm
@@ -201,10 +190,50 @@ export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats,
   args.push(
     '-filter_complex', `${audioFilter};${xfadeFilter(subtitleFile, sceneCount, sceneDuration)}`,
     '-map', '[v]', '-map', '[a]', '-shortest',
+    '-s', `${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}`, '-r', String(FPS),
     '-c:v', 'libx264', '-threads', '1', '-preset', 'ultrafast',
-    '-crf', '26', '-pix_fmt', 'yuv420p', '-r', String(FPS),
-    '-c:a', 'aac', '-b:a', '128k', output
+    '-crf', '26', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '128k', outputPath
   );
-  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', args, { timeout: 300000, maxBuffer: 50 * 1024 * 1024 });
-  return output;
+  return args;
+}
+
+function isWithinJobDirectory(jobDir, filePath) {
+  if (!filePath) return false;
+  const relative = path.relative(path.resolve(jobDir), path.resolve(filePath));
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats, jobDir, signal }) {
+  if (!Array.isArray(sceneAssets) || sceneAssets.length !== SCENE_COUNT) {
+    throw new TypeError(`Exactly ${SCENE_COUNT} generated scenes are required.`);
+  }
+  const subtitleFile = path.join(jobDir, 'subtitles.ass');
+  const outputPath = path.join(jobDir, 'final_short.mp4');
+  const segmentPaths = sceneAssets.map((_, index) => path.join(jobDir, `segment_${index}.mp4`));
+  let rendered = false;
+  try {
+    fs.writeFileSync(subtitleFile, buildAss(subtitleBeats, hook), 'utf8');
+    for (let index = 0; index < sceneAssets.length; index += 1) {
+      await renderScene(sceneAssets[index], index, segmentPaths[index], signal);
+    }
+
+    const bgmPath = process.env.OPTIONAL_BGM_PATH;
+    const hasBgm = Boolean(bgmPath && fs.existsSync(bgmPath));
+    const args = buildFinalRenderArgs({
+      segmentPaths, audioPath, hasBgm, bgmPath, subtitleFile, outputPath
+    });
+    await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', args, {
+      timeout: FFMPEG_TIMEOUT_MS,
+      maxBuffer: 50 * 1024 * 1024,
+      signal
+    });
+    rendered = true;
+    return outputPath;
+  } finally {
+    const cleanupPaths = [...segmentPaths, subtitleFile];
+    if (isWithinJobDirectory(jobDir, audioPath)) cleanupPaths.push(audioPath);
+    if (!rendered) cleanupPaths.push(outputPath);
+    await Promise.all(cleanupPaths.map((filePath) => fs.promises.rm(filePath, { force: true })));
+  }
 }

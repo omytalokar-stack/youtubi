@@ -2,11 +2,12 @@ import { GoogleGenAI } from '@google/genai';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { FFMPEG_TIMEOUT_MS } from './renderService.js';
 import { withGeminiKey } from './geminiApiKeys.js';
 
 const execFileAsync = promisify(execFile);
 
-export async function generateVoiceover(script, language, jobDir) {
+export async function generateVoiceover(script, language, jobDir, signal) {
   const response = await withGeminiKey(async (apiKey) => {
     const ai = new GoogleGenAI({ apiKey });
     return ai.models.generateContent({
@@ -32,10 +33,17 @@ export async function generateVoiceover(script, language, jobDir) {
   header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34); header.write('data', 36);
   header.writeUInt32LE(data.length, 40);
   const fs = await import('node:fs/promises');
-  await fs.writeFile(wav, Buffer.concat([header, data]));
-  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', [
-    '-hide_banner', '-loglevel', 'error', '-y', '-i', wav,
-    '-codec:a', 'libmp3lame', '-b:a', '128k', mp3
-  ], { timeout: 60000, maxBuffer: 50 * 1024 * 1024 });
-  return mp3;
+  let encoded = false;
+  try {
+    await fs.writeFile(wav, Buffer.concat([header, data]));
+    await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y', '-threads', '1', '-i', wav,
+      '-codec:a', 'libmp3lame', '-b:a', '128k', mp3
+    ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 50 * 1024 * 1024, signal });
+    encoded = true;
+    return mp3;
+  } finally {
+    await fs.rm(wav, { force: true });
+    if (!encoded) await fs.rm(mp3, { force: true });
+  }
 }

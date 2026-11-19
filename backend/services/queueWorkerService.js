@@ -9,7 +9,9 @@ import { createJobDirectory, renderShort } from './renderService.js';
 import { uploadShort } from './youtubeService.js';
 
 const LOCK_KEY = 'GLOBAL_RENDER_WORKER';
-const LOCK_DURATION_MS = 15 * 60 * 1000;
+export const RENDER_LOCK_TTL_MS = 15 * 60 * 1000;
+export const RENDER_LOCK_HEARTBEAT_MS = 60 * 1000;
+let processRenderActive = false;
 
 function istSchedule(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -42,18 +44,38 @@ export async function getNextDueChannel() {
   return profile ? { profile, today: current.today, dueAt: getScheduleDueAt(profile, current.today) } : null;
 }
 
-async function acquireLock(channelId) {
+export async function acquireRenderLock(channelId) {
   const now = new Date();
   try {
     const lock = await AutomationLock.findOneAndUpdate(
-      { lockKey: LOCK_KEY, $or: [{ expiresAt: { $lte: now } }, { ownerChannelId: channelId }] },
-      { $set: { ownerChannelId: channelId, expiresAt: new Date(now.getTime() + LOCK_DURATION_MS) } },
+      { lockKey: LOCK_KEY, expiresAt: { $lte: now } },
+      { $set: { ownerChannelId: channelId, expiresAt: new Date(now.getTime() + RENDER_LOCK_TTL_MS) } },
       { upsert: true, new: true, runValidators: true }
     );
-    return lock.ownerChannelId === channelId;
+    return Boolean(lock && lock.ownerChannelId === channelId);
   } catch (error) {
     if (error.code === 11000) return false;
     throw error;
+  }
+}
+
+export async function renewRenderLock(channelId, controller) {
+  try {
+    const result = await AutomationLock.updateOne(
+      { lockKey: LOCK_KEY, ownerChannelId: channelId, expiresAt: { $gt: new Date() } },
+      { $set: { expiresAt: new Date(Date.now() + RENDER_LOCK_TTL_MS) } }
+    );
+    if (result.matchedCount) return true;
+    if (!controller.signal.aborted) {
+      controller.abort(new Error('The global render lock was lost; stopping the active FFmpeg process.'));
+    }
+    return false;
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      controller.abort(new Error('The global render lock could not be renewed; stopping the active FFmpeg process.'));
+    }
+    console.error(`Unable to renew render lock for ${channelId}:`, error.message);
+    return false;
   }
 }
 
@@ -62,24 +84,20 @@ async function releaseLock(channelId) {
 }
 
 async function publishChannel(channelId, profile, today) {
-  if (!await acquireLock(channelId)) return { skipped: true, reason: 'Another channel is rendering or uploading.' };
+  if (processRenderActive) return { skipped: true, reason: 'Another channel is rendering or uploading.' };
+  if (!await acquireRenderLock(channelId)) return { skipped: true, reason: 'Another channel is rendering or uploading.' };
+  processRenderActive = true;
+  const renderController = new AbortController();
   let jobDir;
   let lockLost = false;
   const heartbeat = setInterval(async () => {
-    try {
-      const result = await AutomationLock.updateOne(
-        { lockKey: LOCK_KEY, ownerChannelId: channelId, expiresAt: { $gt: new Date() } },
-        { $set: { expiresAt: new Date(Date.now() + LOCK_DURATION_MS) } }
-      );
-      if (!result.matchedCount) lockLost = true;
-    } catch (error) {
-      lockLost = true;
-      console.error(`Unable to renew render lock for ${channelId}:`, error.message);
-    }
-  }, 60 * 1000);
+    lockLost = !(await renewRenderLock(channelId, renderController));
+  }, RENDER_LOCK_HEARTBEAT_MS);
   heartbeat.unref();
   const ensureLock = () => {
-    if (lockLost) throw new Error('The global render lock was lost; stopping before the next pipeline step.');
+    if (lockLost || renderController.signal.aborted) {
+      throw new Error('The global render lock was lost; stopping before the next pipeline step.');
+    }
   };
   try {
     jobDir = createJobDirectory(channelId);
@@ -87,11 +105,11 @@ async function publishChannel(channelId, profile, today) {
     ensureLock();
     const sceneAssets = generateSceneAssets(generated.scenePrompts);
     ensureLock();
-    const voice = await generateVoiceover(generated.script, profile.language, jobDir);
+    const voice = await generateVoiceover(generated.script, profile.language, jobDir, renderController.signal);
     ensureLock();
     const file = await renderShort({
       sceneAssets, audioPath: voice, hook: generated.hook,
-      subtitleBeats: generated.subtitleBeats, jobDir
+      subtitleBeats: generated.subtitleBeats, jobDir, signal: renderController.signal
     });
     ensureLock();
     const videoId = await uploadShort(channelId, file, generated, profile.automation.privacyStatus);
@@ -106,7 +124,11 @@ async function publishChannel(channelId, profile, today) {
     try {
       if (jobDir) fs.rmSync(jobDir, { recursive: true, force: true });
     } finally {
-      await releaseLock(channelId);
+      try {
+        await releaseLock(channelId);
+      } finally {
+        processRenderActive = false;
+      }
     }
   }
 }
