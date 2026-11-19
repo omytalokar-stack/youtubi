@@ -7,6 +7,9 @@ export type Profile = {
   toneAndStyle: string;
   visualKeywordsPrefix: string;
   metadataBlueprint: { titleSuffix: string; fixedDescriptionFooter: string; coreTags: string[] };
+  autoPublishEnabled: boolean;
+  publishTimeIst: string;
+  lastAutoPublishedDateIst: string;
   automation: {
     enabled: boolean;
     scheduleHourIST: number;

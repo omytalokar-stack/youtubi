@@ -1,16 +1,96 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import AutomationLock from '../models/AutomationLock.js';
+import ChannelProfile from '../models/ChannelProfile.js';
 import {
-  acquireRenderLock, getScheduleDueAt, renewRenderLock,
-  RENDER_LOCK_HEARTBEAT_MS, RENDER_LOCK_TTL_MS
+  acquireRenderLock, getIstSchedule, isChannelDueForSchedule, renewRenderLock,
+  RENDER_LOCK_HEARTBEAT_MS, RENDER_LOCK_TTL_MS, recordPublishedDate, runScheduledTrigger,
+  SCHEDULE_WINDOW_MINUTES
 } from './queueWorkerService.js';
 
-test('converts an IST channel schedule to the correct UTC due time', () => {
-  const dueAt = getScheduleDueAt({
-    automation: { scheduleHourIST: 10, scheduleMinuteIST: 15 }
-  }, '2026-11-17');
-  assert.equal(dueAt.toISOString(), '2026-11-17T04:45:00.000Z');
+test('matches channel schedules only at or within the 25-minute IST window', () => {
+  const current = getIstSchedule(new Date('2026-11-18T10:30:00.000Z'));
+  const profile = {
+    autoPublishEnabled: true,
+    publishTimeIst: '16:00',
+    lastAutoPublishedDateIst: ''
+  };
+  assert.deepEqual(current, { todayIst: '2026-11-18', timeIst: '16:00' });
+  assert.equal(SCHEDULE_WINDOW_MINUTES, 25);
+  assert.equal(isChannelDueForSchedule(profile, current), true);
+  assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '16:25' }), true);
+  assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '16:26' }), false);
+  assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '15:59' }), false);
+  assert.equal(isChannelDueForSchedule({ ...profile, autoPublishEnabled: undefined }, current), false);
+});
+
+test('does not reschedule a channel already published on the current IST date', () => {
+  const current = { todayIst: '2026-11-18', timeIst: '16:00' };
+  assert.equal(isChannelDueForSchedule({
+    autoPublishEnabled: true,
+    publishTimeIst: '16:00',
+    lastAutoPublishedDateIst: current.todayIst
+  }, current), false);
+});
+
+test('runs due channels sequentially in isolated channelId scopes', async (t) => {
+  const originalFind = ChannelProfile.find;
+  const channelA = `UC${'a'.repeat(22)}`;
+  const channelB = `UC${'b'.repeat(22)}`;
+  const legacyChannel = `UC${'f'.repeat(22)}`;
+  const today = '2026-11-18';
+  const profiles = [
+    { channelId: channelA, autoPublishEnabled: true, publishTimeIst: '16:00', lastAutoPublishedDateIst: '' },
+    { channelId: channelB, autoPublishEnabled: true, publishTimeIst: '15:40', lastAutoPublishedDateIst: '' },
+    { channelId: `UC${'c'.repeat(22)}`, autoPublishEnabled: true, publishTimeIst: '15:40', lastAutoPublishedDateIst: today },
+    { channelId: `UC${'d'.repeat(22)}`, autoPublishEnabled: false, publishTimeIst: '15:40', lastAutoPublishedDateIst: '' },
+    { channelId: `UC${'e'.repeat(22)}`, autoPublishEnabled: true, publishTimeIst: '16:26', lastAutoPublishedDateIst: '' },
+    { channelId: legacyChannel, automation: { scheduleHourIST: 15, scheduleMinuteIST: 50 }, lastAutoPublishedDateIst: '' }
+  ];
+  const executionOrder = [];
+  ChannelProfile.find = (filter) => {
+    assert.deepEqual(filter, {});
+    return { lean: async () => profiles };
+  };
+  t.after(() => { ChannelProfile.find = originalFind; });
+
+  const result = await runScheduledTrigger({
+    now: new Date('2026-11-18T10:30:00.000Z'),
+    publish: async (channelId, profile) => {
+      assert.equal(profile.channelId, channelId);
+      executionOrder.push(`start:${channelId}`);
+      await Promise.resolve();
+      executionOrder.push(`done:${channelId}`);
+      return { channelId, videoId: `video-${channelId}` };
+    }
+  });
+
+  assert.equal(result.published, true);
+  assert.deepEqual(executionOrder, [
+    `start:${channelB}`, `done:${channelB}`,
+    `start:${legacyChannel}`, `done:${legacyChannel}`,
+    `start:${channelA}`, `done:${channelA}`
+  ]);
+  assert.deepEqual(result.results.map(({ channelId }) => channelId), [channelB, legacyChannel, channelA]);
+});
+
+test('records automatic publication dates using only the matching channel ID', async (t) => {
+  const originalUpdateOne = ChannelProfile.updateOne;
+  const channelId = `UC${'z'.repeat(22)}`;
+  let update;
+  ChannelProfile.updateOne = async (filter, changes) => {
+    update = { filter, changes };
+    return { matchedCount: 1 };
+  };
+  t.after(() => { ChannelProfile.updateOne = originalUpdateOne; });
+
+  await recordPublishedDate(channelId, '2026-11-18', true);
+
+  assert.deepEqual(update.filter, { channelId });
+  assert.deepEqual(update.changes.$set, {
+    'automation.lastPublishedDateIST': '2026-11-18',
+    lastAutoPublishedDateIst: '2026-11-18'
+  });
 });
 
 test('global render lock rejects a concurrent manual or scheduled job', async (t) => {

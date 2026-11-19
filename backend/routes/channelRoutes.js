@@ -6,12 +6,63 @@ import { channelCredentialExists } from '../services/youtubeService.js';
 const router = Router();
 const languages = ['Hindi', 'Hinglish', 'Marathi', 'English'];
 const privacyStatuses = ['private', 'unlisted', 'public'];
+const channelIdPattern = /^UC[A-Za-z0-9_-]{22}$/;
+const publishTimePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+function getDefaultPublishTimeIst(profile) {
+  const { scheduleHourIST: hour, scheduleMinuteIST: minute } = profile.automation || {};
+  if (Number.isInteger(hour) && hour >= 0 && hour <= 23 &&
+      Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  }
+  return '16:00';
+}
+
+function withScheduleDefaults(profile) {
+  return {
+    ...profile,
+    autoPublishEnabled: profile.autoPublishEnabled ?? true,
+    publishTimeIst: profile.publishTimeIst || getDefaultPublishTimeIst(profile),
+    lastAutoPublishedDateIst: profile.lastAutoPublishedDateIst || ''
+  };
+}
+
+router.patch('/channels/:channelId/schedule', async (req, res, next) => {
+  try {
+    const { channelId } = req.params;
+    if (!channelIdPattern.test(channelId)) return res.status(400).json({ error: 'Invalid YouTube channel ID.' });
+    const input = req.body;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return res.status(400).json({ error: 'A schedule object is required.' });
+    }
+    const keys = Object.keys(input);
+    if (!keys.length || keys.some((key) => !['autoPublishEnabled', 'publishTimeIst'].includes(key))) {
+      return res.status(400).json({ error: 'Only autoPublishEnabled and publishTimeIst can be updated.' });
+    }
+    if (input.autoPublishEnabled !== undefined && typeof input.autoPublishEnabled !== 'boolean') {
+      return res.status(400).json({ error: 'autoPublishEnabled must be a boolean.' });
+    }
+    if (input.publishTimeIst !== undefined &&
+        (typeof input.publishTimeIst !== 'string' || !publishTimePattern.test(input.publishTimeIst))) {
+      return res.status(400).json({ error: 'publishTimeIst must use HH:MM 24-hour format.' });
+    }
+
+    const update = {};
+    if (input.autoPublishEnabled !== undefined) update.autoPublishEnabled = input.autoPublishEnabled;
+    if (input.publishTimeIst !== undefined) update.publishTimeIst = input.publishTimeIst;
+    const profile = await ChannelProfile.findOneAndUpdate(
+      { channelId }, { $set: update }, { new: true, runValidators: true }
+    ).lean();
+    if (!profile) return res.status(404).json({ error: 'Channel profile not found.' });
+    res.json({ profile: withScheduleDefaults(profile) });
+  } catch (error) { next(error); }
+});
 
 router.get('/profile/:channelId', async (req, res, next) => {
   try {
     const profile = await ChannelProfile.findOne({ channelId: req.params.channelId }).lean();
     if (!profile) return res.status(404).json({ error: 'Channel profile not found.' });
-    res.json({ profile });
+    res.json({ profile: withScheduleDefaults(profile) });
   } catch (error) { next(error); }
 });
 router.put('/profile/:channelId', async (req, res, next) => {
@@ -47,7 +98,7 @@ router.put('/profile/:channelId', async (req, res, next) => {
       if (privacyStatus !== undefined) update['automation.privacyStatus'] = privacyStatus;
     }
     const profile = await ChannelProfile.findOneAndUpdate({ channelId }, { $set: update }, { new: true, runValidators: true }).lean();
-    res.json({ profile });
+    res.json({ profile: profile && withScheduleDefaults(profile) });
   } catch (error) { next(error); }
 });
 router.get('/brain/:channelId', async (req, res, next) => {

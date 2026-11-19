@@ -14,7 +14,7 @@ Gemini generates eight motion-focused 9:16 scene prompts and aligned narration/s
 
 ## Automation
 
-Configure a cron provider to send `POST /api/automation/trigger` at least once per minute with `x-cron-secret: <CRON_SECRET>` (or the `?secret=` query parameter supported by cron-job.org). The worker checks due schedule slots in IST and uses the native Gemini, voiceover, FFmpeg rendering, and YouTube upload pipeline directly. Manual `POST /api/automation/publish/:channelId` requests return `202 Accepted` while that same pipeline runs in the background.
+Set each channel's independent daily upload time in Settings. Configure cron-job.org's timezone as `Asia/Kolkata` and send a daily `GET` (or `POST`) request to `https://youtubi.onrender.com/api/automation/trigger` at the same IST time; if channels use different times, create a daily cron job for each time using the same URL. Set the `x-cron-secret: <CRON_SECRET>` header when the backend secret is configured. The endpoint returns `202 Accepted` and checks due channels in the background; it accepts triggers from the scheduled minute through 25 minutes afterward, processes due channels sequentially, and skips channels already published that IST date. No 10-minute keep-alive pings are needed. The native Gemini, voiceover, FFmpeg rendering, and YouTube upload pipeline runs directly. Manual `POST /api/automation/publish/:channelId` requests remain `202 Accepted` while that same pipeline runs in the background.
 
 `POST /api/automation/audit-analytics` is protected by the same secret and requires `{ "channelId": "..." }`. The dashboard's manual audit asks for that secret at run time; it is not embedded in the frontend bundle.
 
@@ -22,10 +22,9 @@ Before each Short, the backend fetches up to 30 recent channel videos, classifie
 
 ## Resource and data boundaries
 
-- Channel-specific reads and writes use `channelId`; scripts load only that channel's profile, brain memory, and 30 latest video titles/hooks. Global queries are limited to listing connected channels and reserving distinct schedule slots.
+- Channel-specific reads and writes use `channelId`; scripts load only that channel's profile, brain memory, and 30 latest video titles/hooks. Each channel stores its own enabled state, IST upload time, and last successful auto-publish date.
 - A MongoDB global render lock serializes generation and uploads across channels.
 - Use a persistent MongoDB service such as Atlas for local and Render deployments. Render's ephemeral filesystem is not a database; check the Atlas network access allowlist if the backend cannot connect.
-- Connected channels receive the next distinct minute slot in IST. The requested `hour:minute` schema has 1,440 daily slots, so a strict globally unique minute schedule cannot represent more than 1,440 channels; a date-based or finer-grained scheduler is needed if that theoretical limit matters.
 - All intermediate voice, scene, subtitle, and render files are created in a unique directory under the operating system's temporary directory. Scene/audio inputs are removed in render `finally` blocks, partial outputs are removed on failure, and the full job directory is removed after upload.
 - FFmpeg renders eight 2.75-second portrait scenes at 720×1280 and 24 fps, using one thread, the `ultrafast` preset, yuv420p, lightweight crop/drawbox/equalizer filters, and 0.18-second xfade transitions. Every render command has an eight-minute timeout. A global render lock has a 15-minute TTL and a one-minute heartbeat; loss of the lock aborts the active FFmpeg process.
 - Captions use the bundled Noto Sans Devanagari font through FFmpeg drawtext, with 48px white text, a translucent dark box, shadow, and 3–5-word timed groups. Stock clips are size-limited, downloaded only from the configured provider, and normalized to the same 720×1280/24fps render format.

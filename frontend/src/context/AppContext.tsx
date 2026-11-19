@@ -14,6 +14,7 @@ type AppContextValue = {
   setChannelId: (id: string) => void;
   refresh: () => Promise<void>;
   saveProfile: (profile: Partial<Profile>) => Promise<void>;
+  saveSchedule: (schedule: Pick<Profile, 'autoPublishEnabled' | 'publishTimeIst'>) => Promise<Profile>;
   setNotice: (notice: string) => void;
 };
 
@@ -73,10 +74,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setNotice('Channel blueprint saved.');
   }, [channelId]);
 
+  const saveSchedule = useCallback(async (schedule: Pick<Profile, 'autoPublishEnabled' | 'publishTimeIst'>) => {
+    if (!channelId) throw new Error('Connect and select a YouTube channel first.');
+    const result = await api<{ profile: Profile }>(`/channels/${encodeURIComponent(channelId)}/schedule`, {
+      method: 'PATCH', body: JSON.stringify(schedule)
+    });
+    setProfile(result.profile);
+    setNotice('Daily auto-upload schedule saved.');
+    return result.profile;
+  }, [channelId]);
+
   const value = useMemo(() => ({
     channels, channelId, profile, brain, stats, loading, error, notice,
-    setChannelId, refresh, saveProfile, setNotice
-  }), [channels, channelId, profile, brain, stats, loading, error, notice, refresh, saveProfile]);
+    setChannelId, refresh, saveProfile, saveSchedule, setNotice
+  }), [channels, channelId, profile, brain, stats, loading, error, notice, refresh, saveProfile, saveSchedule]);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

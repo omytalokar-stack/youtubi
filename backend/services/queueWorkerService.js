@@ -11,37 +11,46 @@ import { uploadShort } from './youtubeService.js';
 const LOCK_KEY = 'GLOBAL_RENDER_WORKER';
 export const RENDER_LOCK_TTL_MS = 15 * 60 * 1000;
 export const RENDER_LOCK_HEARTBEAT_MS = 60 * 1000;
+export const SCHEDULE_WINDOW_MINUTES = 25;
+const DEFAULT_PUBLISH_TIME_IST = '16:00';
+const PUBLISH_TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 let processRenderActive = false;
 
-function istSchedule(date = new Date()) {
+export function getIstSchedule(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
   }).formatToParts(date);
   const value = (type) => parts.find((part) => part.type === type)?.value;
-  return { today: `${value('year')}-${value('month')}-${value('day')}`, hour: Number(value('hour')), minute: Number(value('minute')) };
+  return {
+    todayIst: `${value('year')}-${value('month')}-${value('day')}`,
+    timeIst: `${value('hour')}:${value('minute')}`
+  };
 }
 
 export function getTodayIST() {
-  return istSchedule().today;
+  return getIstSchedule().todayIst;
 }
 
-export function getScheduleDueAt(profile, today) {
-  const [year, month, day] = today.split('-').map(Number);
-  const minuteOfDay = profile.automation.scheduleHourIST * 60 + profile.automation.scheduleMinuteIST;
-  return new Date(Date.UTC(year, month - 1, day, Math.floor(minuteOfDay / 60), minuteOfDay % 60) - 330 * 60 * 1000);
+function getChannelPublishTimeIst(profile) {
+  if (typeof profile.publishTimeIst === 'string') return profile.publishTimeIst;
+  const { scheduleHourIST: hour, scheduleMinuteIST: minute } = profile.automation || {};
+  if (Number.isInteger(hour) && hour >= 0 && hour <= 23 &&
+      Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  }
+  return DEFAULT_PUBLISH_TIME_IST;
 }
 
-export async function getNextDueChannel() {
-  const current = istSchedule();
-  const nowMinutes = current.hour * 60 + current.minute;
-  const profiles = await ChannelProfile.find({ 'automation.enabled': true })
-    .sort({ 'automation.scheduleHourIST': 1, 'automation.scheduleMinuteIST': 1, channelId: 1 }).lean();
-  const profile = profiles.find((item) => {
-    const schedule = item.automation.scheduleHourIST * 60 + item.automation.scheduleMinuteIST;
-    return schedule <= nowMinutes && item.automation.lastPublishedDateIST !== current.today;
-  });
-  return profile ? { profile, today: current.today, dueAt: getScheduleDueAt(profile, current.today) } : null;
+export function isChannelDueForSchedule(profile, current = getIstSchedule()) {
+  if (profile.autoPublishEnabled !== true ||
+      profile.lastAutoPublishedDateIst === current.todayIst) return false;
+  const publishTimeIst = getChannelPublishTimeIst(profile);
+  if (!PUBLISH_TIME_PATTERN.test(publishTimeIst)) return false;
+  const [publishHour, publishMinute] = publishTimeIst.split(':').map(Number);
+  const [currentHour, currentMinute] = current.timeIst.split(':').map(Number);
+  const minutesAfterSchedule = (currentHour * 60 + currentMinute) - (publishHour * 60 + publishMinute);
+  return minutesAfterSchedule >= 0 && minutesAfterSchedule <= SCHEDULE_WINDOW_MINUTES;
 }
 
 export async function acquireRenderLock(channelId) {
@@ -83,7 +92,13 @@ async function releaseLock(channelId) {
   await AutomationLock.deleteOne({ lockKey: LOCK_KEY, ownerChannelId: channelId });
 }
 
-async function publishChannel(channelId, profile, today) {
+export async function recordPublishedDate(channelId, todayIst, autoPublished = false) {
+  const fields = { 'automation.lastPublishedDateIST': todayIst };
+  if (autoPublished) fields.lastAutoPublishedDateIst = todayIst;
+  await ChannelProfile.updateOne({ channelId }, { $set: fields });
+}
+
+async function publishChannel(channelId, profile, { trackPublication = false, autoPublished = false } = {}) {
   if (processRenderActive) return { skipped: true, reason: 'Another channel is rendering or uploading.' };
   if (!await acquireRenderLock(channelId)) return { skipped: true, reason: 'Another channel is rendering or uploading.' };
   processRenderActive = true;
@@ -100,6 +115,20 @@ async function publishChannel(channelId, profile, today) {
     }
   };
   try {
+    if (autoPublished) {
+      const currentProfile = await ChannelProfile.findOne({ channelId }).lean();
+      const currentSchedule = getIstSchedule();
+      if (!currentProfile ||
+          !isChannelDueForSchedule({
+            ...currentProfile,
+            autoPublishEnabled: currentProfile.autoPublishEnabled === undefined
+              ? true
+              : currentProfile.autoPublishEnabled
+          }, currentSchedule)) {
+        return { skipped: true, reason: 'Channel is no longer due for an automatic upload.' };
+      }
+      profile = currentProfile;
+    }
     jobDir = createJobDirectory(channelId);
     const generated = await generateShort(channelId);
     ensureLock();
@@ -117,7 +146,7 @@ async function publishChannel(channelId, profile, today) {
       channelId, videoId, title: generated.title, hook: generated.hook,
       script: generated.script, tags: generated.tags, publishedAt: new Date()
     });
-    await ChannelProfile.updateOne({ channelId }, { $set: { 'automation.lastPublishedDateIST': today } });
+    if (trackPublication) await recordPublishedDate(channelId, getTodayIST(), autoPublished);
     return { channelId, videoId, title: generated.title };
   } finally {
     clearInterval(heartbeat);
@@ -137,13 +166,38 @@ export async function publishNow(channelId) {
   const profile = await ChannelProfile.findOne({ channelId }).lean();
   if (!profile) throw new Error(`Channel profile not found for ${channelId}.`);
   if (!profile.automation?.privacyStatus) throw new Error(`Channel ${channelId} has no privacy setting.`);
-  return publishChannel(channelId, profile, istSchedule().today);
+  return publishChannel(channelId, profile, { trackPublication: true });
 }
 
-export async function runScheduledTrigger() {
-  const next = await getNextDueChannel();
-  if (!next) return { published: false, reason: 'No channel is due today.' };
-  const { profile, today } = next;
-  const result = await publishChannel(profile.channelId, profile, today);
-  return { published: !result.skipped, ...result };
+export async function runScheduledTrigger({ now = new Date(), publish } = {}) {
+  const current = getIstSchedule(now);
+  const publishScheduled = publish || ((channelId, profile) =>
+    publishChannel(channelId, profile, { trackPublication: true, autoPublished: true }));
+  const profiles = await ChannelProfile.find({}).lean();
+  const dueProfiles = profiles.map((profile) => ({
+    ...profile,
+    autoPublishEnabled: profile.autoPublishEnabled === undefined ? true : profile.autoPublishEnabled
+  })).filter((profile) => isChannelDueForSchedule(profile, current))
+    .sort((left, right) =>
+      getChannelPublishTimeIst(left).localeCompare(getChannelPublishTimeIst(right)) ||
+      left.channelId.localeCompare(right.channelId)
+    );
+  if (!dueProfiles.length) return { published: false, results: [], reason: 'No channel is due today.' };
+
+  const results = [];
+  for (const profile of dueProfiles) {
+    const { channelId } = profile;
+    try {
+      const result = await publishScheduled(channelId, profile);
+      if (result.skipped) {
+        results.push({ ...result, channelId, published: false });
+        continue;
+      }
+      results.push({ ...result, channelId, published: true });
+    } catch (error) {
+      console.error(`Scheduled publish failed for ${channelId}:`, error.message);
+      results.push({ channelId, published: false, error: error.message });
+    }
+  }
+  return { published: results.some((result) => result.published), results };
 }

@@ -1,9 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Check, Clock3, LockKeyhole, Save } from 'lucide-react';
+import { Check, LockKeyhole, Save } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import type { Profile } from '../../types';
 
-const blank: Omit<Profile, 'channelId' | 'channelTitle'> = {
+type ChannelDNAForm = Omit<Profile, 'channelId' | 'channelTitle' | 'autoPublishEnabled' | 'publishTimeIst' | 'lastAutoPublishedDateIst'>;
+
+const blank: ChannelDNAForm = {
   niche: '', language: 'Hindi', toneAndStyle: '', visualKeywordsPrefix: '',
   metadataBlueprint: { titleSuffix: '', fixedDescriptionFooter: '', coreTags: [] },
   automation: { enabled: false, scheduleHourIST: 10, scheduleMinuteIST: 0, privacyStatus: 'private', lastPublishedDateIST: '' }
@@ -11,7 +13,7 @@ const blank: Omit<Profile, 'channelId' | 'channelTitle'> = {
 
 export function ChannelDNA() {
   const { profile, saveProfile, channels, channelId, setNotice } = useApp();
-  const [form, setForm] = useState(blank);
+  const [form, setForm] = useState<ChannelDNAForm>(blank);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -59,14 +61,9 @@ export function ChannelDNA() {
             <label className="field field-wide"><span>Fixed description footer</span><textarea rows={3} value={form.metadataBlueprint.fixedDescriptionFooter} onChange={(event) => update('metadataBlueprint', { ...form.metadataBlueprint, fixedDescriptionFooter: event.target.value })} placeholder="A consistent channel signature or call to action." /></label>
           </div>
         </section>
-        <section className="panel form-panel schedule-panel">
-          <div className="section-heading"><div><span className="section-kicker">03 — RHYTHM</span><h2>Publishing schedule</h2></div><span className="timezone-badge"><Clock3 size={13} /> IST · UTC+05:30</span></div>
-          <div className="schedule-row">
-            <div className="schedule-info"><strong>Automated publishing</strong><span>At most one channel is processed per trigger for stable memory usage.</span></div>
-            <button type="button" className={`switch ${form.automation.enabled ? 'switch-on' : ''}`} role="switch" aria-checked={form.automation.enabled} onClick={() => update('automation', { ...form.automation, enabled: !form.automation.enabled })}><span /></button>
-          </div>
-          <div className="form-grid schedule-fields">
-            <label className="field"><span>Daily IST slot</span><div className="time-input"><input type="number" min="0" max="23" value={String(form.automation.scheduleHourIST).padStart(2, '0')} onChange={(event) => update('automation', { ...form.automation, scheduleHourIST: Number(event.target.value) })} /><b>:</b><input type="number" min="0" max="59" value={String(form.automation.scheduleMinuteIST).padStart(2, '0')} onChange={(event) => update('automation', { ...form.automation, scheduleMinuteIST: Number(event.target.value) })} /></div></label>
+        <section className="panel form-panel">
+          <div className="section-heading"><div><span className="section-kicker">03 — UPLOAD DEFAULTS</span><h2>Default visibility</h2></div><span className="locked-badge"><LockKeyhole size={12} /> CHANNEL SCOPED</span></div>
+          <div className="form-grid">
             <label className="field"><span>Upload visibility</span><select value={form.automation.privacyStatus} onChange={(event) => update('automation', { ...form.automation, privacyStatus: event.target.value as Profile['automation']['privacyStatus'] })}><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></label>
           </div>
         </section>

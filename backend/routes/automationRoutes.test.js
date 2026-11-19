@@ -37,3 +37,38 @@ test('manual publish acknowledges immediately and reports background failures', 
     console.error = originalConsoleError;
   }
 });
+
+test('GET trigger accepts cron-job.org webhooks with the configured cron secret', async (t) => {
+  const originalFind = ChannelProfile.find;
+  const previousSecret = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = 'test-cron-secret';
+  let markTriggerStarted;
+  const triggerStarted = new Promise((resolve) => { markTriggerStarted = resolve; });
+  ChannelProfile.find = () => {
+    markTriggerStarted();
+    return { lean: async () => [] };
+  };
+  t.after(() => {
+    ChannelProfile.find = originalFind;
+    if (previousSecret === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = previousSecret;
+  });
+
+  const app = express();
+  app.use('/api/automation', automationRoutes);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/api/automation/trigger`;
+    const unauthorized = await fetch(url);
+    assert.equal(unauthorized.status, 401);
+
+    const response = await fetch(url, { headers: { 'x-cron-secret': 'test-cron-secret' } });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), { accepted: true, message: 'Scheduled upload check started.' });
+    await triggerStarted;
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
+});
