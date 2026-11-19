@@ -12,7 +12,6 @@ const FPS = 24;
 const FRAME_COUNT = Math.round(SCENE_DURATION * FPS);
 const TRANSITIONS = ['smoothleft', 'wipeleft', 'smoothup', 'dissolve', 'slideright', 'smoothdown', 'wiperight'];
 const OUTPUT_DURATION = SCENE_COUNT * SCENE_DURATION - (SCENE_COUNT - 1) * TRANSITION_DURATION;
-const FLOW_CLIP_COUNT = 5;
 
 export function createJobDirectory(channelId) {
   const safeId = channelId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -155,16 +154,10 @@ async function renderScene(asset, index, jobDir) {
   return outputPath;
 }
 
-export function buildVideoSceneFilter(index, duration) {
-  return `[${index}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=${FPS},tpad=stop_mode=clone:stop_duration=${duration},trim=duration=${duration},settb=AVTB,setpts=PTS-STARTPTS,format=yuv420p[v${index}]`;
-}
-
-function xfadeFilter(subtitleFile, sceneCount = SCENE_COUNT, sceneDuration = SCENE_DURATION, videoInputs = false) {
+function xfadeFilter(subtitleFile, sceneCount = SCENE_COUNT, sceneDuration = SCENE_DURATION) {
   const filters = [];
   for (let index = 0; index < sceneCount; index += 1) {
-    filters.push(videoInputs
-      ? buildVideoSceneFilter(index, sceneDuration)
-      : `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[v${index}]`);
+    filters.push(`[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[v${index}]`);
   }
   let previous = 'v0';
   for (let index = 1; index < sceneCount; index += 1) {
@@ -180,29 +173,22 @@ function xfadeFilter(subtitleFile, sceneCount = SCENE_COUNT, sceneDuration = SCE
 }
 
 export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats, jobDir }) {
-  const isFlowVideo = Array.isArray(sceneAssets) && sceneAssets.length === FLOW_CLIP_COUNT &&
-    sceneAssets.every((asset) => asset?.type === 'video' && typeof asset.path === 'string' && fs.existsSync(asset.path));
-  if (!isFlowVideo && (!Array.isArray(sceneAssets) || sceneAssets.length !== SCENE_COUNT)) {
-    throw new TypeError(`Exactly ${SCENE_COUNT} generated scenes or ${FLOW_CLIP_COUNT} Flow AI video clips are required.`);
+  if (!Array.isArray(sceneAssets) || sceneAssets.length !== SCENE_COUNT) {
+    throw new TypeError(`Exactly ${SCENE_COUNT} generated scenes are required.`);
   }
   const subtitleFile = path.join(jobDir, 'subtitles.ass');
   const output = path.join(jobDir, 'final_short.mp4');
   fs.writeFileSync(subtitleFile, buildAss(subtitleBeats, hook), 'utf8');
   const segmentPaths = [];
-  if (!isFlowVideo) {
-    for (let index = 0; index < sceneAssets.length; index += 1) {
-      segmentPaths.push(await renderScene(sceneAssets[index], index, jobDir));
-    }
+  for (let index = 0; index < sceneAssets.length; index += 1) {
+    segmentPaths.push(await renderScene(sceneAssets[index], index, jobDir));
   }
 
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-filter_complex_threads', '1'];
-  const sceneCount = isFlowVideo ? FLOW_CLIP_COUNT : sceneAssets.length;
-  const sceneDuration = isFlowVideo
-    ? (OUTPUT_DURATION + (sceneCount - 1) * TRANSITION_DURATION) / sceneCount
-    : SCENE_DURATION;
+  const sceneCount = sceneAssets.length;
+  const sceneDuration = SCENE_DURATION;
   for (let index = 0; index < sceneCount; index += 1) {
-    const segmentPath = isFlowVideo ? sceneAssets[index].path : segmentPaths[index];
-    args.push('-threads', '1', '-i', segmentPath);
+    args.push('-threads', '1', '-i', segmentPaths[index]);
   }
   args.push('-threads', '1', '-i', audioPath);
   const hasBgm = Boolean(process.env.OPTIONAL_BGM_PATH && fs.existsSync(process.env.OPTIONAL_BGM_PATH));
@@ -213,7 +199,7 @@ export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats,
     ? `[${voiceInput}:a]volume=1[voice];[${voiceInput + 1}:a]volume=0.126[music];[voice][music]amix=inputs=2:duration=first[a]`
     : `[${voiceInput}:a]anull[a]`;
   args.push(
-    '-filter_complex', `${audioFilter};${xfadeFilter(subtitleFile, sceneCount, sceneDuration, isFlowVideo)}`,
+    '-filter_complex', `${audioFilter};${xfadeFilter(subtitleFile, sceneCount, sceneDuration)}`,
     '-map', '[v]', '-map', '[a]', '-shortest',
     '-c:v', 'libx264', '-threads', '1', '-preset', 'ultrafast',
     '-crf', '26', '-pix_fmt', 'yuv420p', '-r', String(FPS),

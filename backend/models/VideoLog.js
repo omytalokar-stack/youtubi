@@ -8,6 +8,10 @@ const VideoLogSchema = new mongoose.Schema({
   script: { type: String, default: '' },
   tags: { type: [String], default: [] },
   views: { type: Number, default: 0 },
+  impressions: { type: Number, default: 0 },
+  ctr: { type: Number, default: 0 },
+  averageViewDuration: { type: Number, default: 0 },
+  retention: { type: Number, default: 0 },
   likes: { type: Number, default: 0 },
   watchTimeMinutes: { type: Number, default: 0 },
   publishedAt: { type: Date, default: Date.now }

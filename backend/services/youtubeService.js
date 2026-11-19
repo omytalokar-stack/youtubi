@@ -144,31 +144,72 @@ export async function getChannelStats(channelId) {
   };
 }
 
-export async function fetchVideoAnalytics(channelId, videoIds) {
-  const auth = await getChannelAuth(channelId);
-  const youtube = google.youtube({ version: 'v3', auth });
-  const response = await youtube.videos.list({ part: ['statistics'], id: videoIds });
-  const byId = new Map((response.data.items || []).map((item) => [item.id, item.statistics || {}]));
+async function fetchAnalyticsMetrics(auth, channelId, videoIds) {
   const analytics = google.youtubeAnalytics({ version: 'v2', auth });
   const endDate = new Date().toISOString().slice(0, 10);
   const startDate = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
-  let watchByVideo = new Map();
-  try {
-    const report = await analytics.reports.query({
-      ids: 'channel==MINE', startDate, endDate, dimensions: 'video',
-      metrics: 'estimatedMinutesWatched', filters: `video==${videoIds.join(',')}`
-    });
-    watchByVideo = new Map((report.data.rows || []).map(([id, minutes]) => [id, Number(minutes)]));
-  } catch (error) {
-    if (error.code !== 403 && error.code !== 400) throw error;
-    console.warn(`Per-video watch-time unavailable for ${channelId}: ${error.message}`);
-  }
-  return videoIds.map((videoId) => ({
-    videoId,
-    views: Number(byId.get(videoId)?.viewCount || 0),
-    likes: Number(byId.get(videoId)?.likeCount || 0),
-    watchTimeMinutes: watchByVideo.get(videoId) || 0
+  const reports = await Promise.all([
+    { metrics: 'impressions,impressionClickThroughRate', fields: ['impressions', 'ctr'] },
+    { metrics: 'averageViewDuration,averageViewPercentage,estimatedMinutesWatched', fields: ['averageViewDuration', 'retention', 'watchTimeMinutes'] }
+  ].map(async ({ metrics, fields }) => {
+    try {
+      const report = await analytics.reports.query({
+        ids: 'channel==MINE',
+        startDate,
+        endDate,
+        dimensions: 'video',
+        metrics,
+        filters: `video==${videoIds.join(',')}`
+      });
+      return (report.data.rows || []).map((row) => [row[0], Object.fromEntries(
+        fields.map((field, index) => [field, Number(row[index + 1] || 0)])
+      )]);
+    } catch (error) {
+      if (error.code !== 403 && error.code !== 400) throw error;
+      console.warn(`Per-video YouTube Analytics (${metrics}) unavailable for ${channelId}: ${error.message}`);
+      return [];
+    }
   }));
+  const result = new Map();
+  reports.flat().forEach(([videoId, values]) => {
+    result.set(videoId, { ...(result.get(videoId) || {}), ...values });
+  });
+  return result;
+}
+
+export async function fetchRecentVideoAnalytics(channelId, limit = 30) {
+  const auth = await getChannelAuth(channelId);
+  const youtube = google.youtube({ version: 'v3', auth });
+  const search = await youtube.search.list({
+    part: ['snippet'],
+    channelId,
+    type: ['video'],
+    order: 'date',
+    maxResults: Math.min(Math.max(limit, 1), 50)
+  });
+  const videoIds = (search.data.items || []).map((item) => item.id?.videoId).filter(Boolean);
+  if (!videoIds.length) return [];
+
+  const [details, analyticsByVideo] = await Promise.all([
+    youtube.videos.list({ part: ['snippet', 'statistics'], id: videoIds }),
+    fetchAnalyticsMetrics(auth, channelId, videoIds)
+  ]);
+  return (details.data.items || []).map((video) => {
+    const analytics = analyticsByVideo.get(video.id) || {};
+    return {
+      videoId: video.id,
+      title: video.snippet?.title || '',
+      tags: video.snippet?.tags || [],
+      publishedAt: video.snippet?.publishedAt || '',
+      views: Number(video.statistics?.viewCount || analytics.views || 0),
+      impressions: analytics.impressions || 0,
+      ctr: analytics.ctr || 0,
+      averageViewDuration: analytics.averageViewDuration || 0,
+      retention: analytics.retention || 0,
+      likes: Number(video.statistics?.likeCount || analytics.likes || 0),
+      watchTimeMinutes: analytics.watchTimeMinutes || 0
+    };
+  });
 }
 
 export async function uploadShort(channelId, filePath, metadata, privacyStatus) {

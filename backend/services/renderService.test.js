@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildAss, buildVideoSceneFilter } from './renderService.js';
+import { buildAss, renderShort } from './renderService.js';
 
 test('builds energetic two-to-three word captions for all eight beats', () => {
   const ass = buildAss(Array.from({ length: 8 }, () => 'one two three four five six seven'), 'Test hook');
@@ -18,10 +18,10 @@ test('requires exactly eight subtitle beats', () => {
   assert.throws(() => buildAss(['one beat'], 'Test hook'), /Exactly 8 subtitle beats/);
 });
 
-test('normalizes real Flow clips without replacing their animated content', () => {
-  const filter = buildVideoSceneFilter(2, 4.4);
-  assert.match(filter, /^\[2:v\]/);
-  assert.match(filter, /scale=720:1280/);
-  assert.match(filter, /tpad=stop_mode=clone/);
-  assert.match(filter, /trim=duration=4\.4/);
+test('rejects external clips instead of bypassing native scene generation', async () => {
+  const sceneAssets = Array.from({ length: 5 }, (_, index) => ({ type: 'video', path: `clip-${index}.mp4` }));
+  await assert.rejects(
+    renderShort({ sceneAssets, audioPath: '', hook: '', subtitleBeats: [], jobDir: '' }),
+    /Exactly 8 generated scenes/
+  );
 });

@@ -6,7 +6,7 @@ A standalone, multi-channel YouTube Shorts studio. The React app is in `frontend
 
 1. Copy `backend/.env.example` to `backend/.env` and configure a reachable MongoDB URI, Google OAuth, Gemini, and a 32-byte `TOKEN_ENCRYPTION_KEY` (64 hex characters or base64). Set `OAUTH_STATE_SECRET` and `CRON_SECRET` to independent, high-entropy secrets. The backend refuses temporary database storage so connected-channel credentials survive restarts.
 2. In Google Cloud, enable YouTube Data API v3 and YouTube Analytics API v2, configure the OAuth consent screen and the redirect URI exactly as `OAUTH_REDIRECT_URI`, and use the read-only, upload, and analytics scopes in the example.
-3. Configure `frontend/.env` from `frontend/.env.example`. Set the backend's `FRONTEND_ORIGIN` to a comma-separated list of exact browser origins (for example, `https://your-project.vercel.app,http://localhost:5173`) and set `PUBLIC_APP_URL` to the deployed frontend URL. In Vercel, set `VITE_API_URL` to `https://<your-render-service>.onrender.com/api`; Vite reads it during the build, so redeploy after changing it. The Google OAuth redirect URI must remain the backend's `/api/youtube/oauth2callback` URL.
+3. Configure `frontend/.env` from `frontend/.env.example`. Set the backend's `FRONTEND_ORIGIN` and/or `FRONTEND_URL` to comma-separated exact browser origins (for example, `https://your-project.vercel.app,http://localhost:5173`); the deployed `https://frontend-mu-blush-93.vercel.app` origin is always allowed. Set `PUBLIC_APP_URL` to the deployed frontend URL. In Vercel, set `VITE_API_URL` to `https://<your-render-service>.onrender.com/api`; Vite reads it during the build, so redeploy after changing it. The Google OAuth redirect URI must remain the backend's `/api/youtube/oauth2callback` URL.
 4. Install dependencies in the root, `backend/`, and `frontend/` using `npm install`, then run `npm run dev` from this directory.
 5. Install FFmpeg and ffprobe on the backend host. The renderer defaults to the `ffmpeg` executable and needs FFmpeg's `libx264`, AAC, and subtitles (libass) support.
 
@@ -14,13 +14,11 @@ Gemini generates eight motion-focused 9:16 scene prompts and aligned narration/s
 
 ## Automation
 
-Configure a cron provider to send `POST /api/automation/trigger` at least once per minute with `x-cron-secret: <CRON_SECRET>` (or the `?secret=` query parameter supported by cron-job.org). The worker checks due schedule slots in IST and handles at most one channel per request; repeated calls are needed to invoke the Hisa timeout fallback automatically.
-
-The Flow AI worker can poll `GET /api/hisa/next-job` using `x-hisa-secret: <CRON_SECRET>`. It receives a generated script and five animation prompts for the next due channel. Complete it with five MP4 files in the multipart `clips` field or five HTTPS `.mp4` URLs in JSON as `{ "clipUrls": ["...", "...", "...", "...", "..."] }` at `POST /api/hisa/complete-job/:jobId`. The API renders the animated clips with the generated Gemini voiceover and subtitles, then uploads the Short. The Hisa handoff window is 15 minutes from each channel's scheduled time by default; set `HISA_FALLBACK_WINDOW_MINUTES` to an integer from 1 to 1440 to change this. The scheduled trigger waits for Hisa during that window, then uses the existing local visual-generation pipeline as a fallback.
+Configure a cron provider to send `POST /api/automation/trigger` at least once per minute with `x-cron-secret: <CRON_SECRET>` (or the `?secret=` query parameter supported by cron-job.org). The worker checks due schedule slots in IST and uses the native Gemini, voiceover, FFmpeg rendering, and YouTube upload pipeline directly. Manual `POST /api/automation/publish/:channelId` requests return `202 Accepted` while that same pipeline runs in the background.
 
 `POST /api/automation/audit-analytics` is protected by the same secret and requires `{ "channelId": "..." }`. The dashboard's manual audit asks for that secret at run time; it is not embedded in the frontend bundle.
 
-Manual publishing uses the selected channel's saved privacy setting. Review that channel's blueprint and upload visibility before publishing.
+Before each Short, the backend fetches up to 30 recent channel videos, classifies relative winners and underperformers using view/impression velocity, CTR, retention, average view duration, and likes, then saves the performance scorecard and learned formulas/guardrails to that channel's Agent Brain. This requires the YouTube Analytics read-only scope; unavailable analytics metrics are logged and left as zero rather than fabricated. Manual publishing uses the selected channel's saved privacy setting. Review that channel's blueprint and upload visibility before publishing.
 
 ## Resource and data boundaries
 

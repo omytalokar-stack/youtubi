@@ -59,7 +59,7 @@ export function Analytics() {
       </section>
       <aside className="panel insight-panel">
         <div className="section-heading"><div><span className="section-kicker">YOUR NEXT EDGE</span><h2>Dimag insight</h2></div><span className="brain-spark">✳</span></div>
-        {audit ? <div className="audit-insight"><div className="insight-entry"><span className="insight-label positive-label">KEEP DOING</span><p>{audit.winningTactic}</p></div><div className="insight-entry"><span className="insight-label caution-label">WATCH OUT</span><p>{audit.mistakeRule}</p></div></div> : <div className="insight-empty"><span className="insight-orbit">✳</span><p>Run a channel audit to turn your last 7 videos into one practical tactic and one rule for the next Short.</p><span>Grounded in your channel’s actual performance</span></div>}
+        {audit ? <div className="audit-insight"><div className="insight-entry"><span className="insight-label positive-label">KEEP DOING</span><p>{audit.winningTactic}</p></div><div className="insight-entry"><span className="insight-label caution-label">WATCH OUT</span><p>{audit.mistakeRule}</p></div></div> : <div className="insight-empty"><span className="insight-orbit">✳</span><p>Run a channel audit to turn up to 30 recent videos into one practical tactic and one rule for the next Short.</p><span>Grounded in your channel’s actual performance</span></div>}
         <div className="insight-footer"><span className="online-dot" /> Channel-isolated learning</div>
       </aside>
     </div>

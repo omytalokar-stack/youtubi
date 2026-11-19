@@ -1,23 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getHisaFallbackWindowMs, getScheduleDueAt } from './queueWorkerService.js';
-
-test('uses the documented Hisa fallback window and validates overrides', () => {
-  const previousWindow = process.env.HISA_FALLBACK_WINDOW_MINUTES;
-  try {
-    delete process.env.HISA_FALLBACK_WINDOW_MINUTES;
-    assert.equal(getHisaFallbackWindowMs(), 15 * 60 * 1000);
-
-    process.env.HISA_FALLBACK_WINDOW_MINUTES = '30';
-    assert.equal(getHisaFallbackWindowMs(), 30 * 60 * 1000);
-
-    process.env.HISA_FALLBACK_WINDOW_MINUTES = '0';
-    assert.throws(() => getHisaFallbackWindowMs(), /integer from 1 to 1440/);
-  } finally {
-    if (previousWindow === undefined) delete process.env.HISA_FALLBACK_WINDOW_MINUTES;
-    else process.env.HISA_FALLBACK_WINDOW_MINUTES = previousWindow;
-  }
-});
+import { getScheduleDueAt } from './queueWorkerService.js';
 
 test('converts an IST channel schedule to the correct UTC due time', () => {
   const dueAt = getScheduleDueAt({

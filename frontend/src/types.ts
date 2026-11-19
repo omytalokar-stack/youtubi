@@ -20,6 +20,21 @@ export type Brain = {
   selfCorrectionEnabled: boolean;
   winningTactics: string[];
   mistakeRules: string[];
+  winningBlueprint: string;
+  nextVideoStrategy: string;
+  performanceScorecard: {
+    videoId: string;
+    title: string;
+    classification: 'winner' | 'underperformer';
+    score: number;
+    views: number;
+    impressions: number;
+    ctr: number;
+    averageViewDuration: number;
+    retention: number;
+    likes: number;
+    publishedAt: string | null;
+  }[];
   lastAutoAuditAt: string | null;
 };
 export type Video = {

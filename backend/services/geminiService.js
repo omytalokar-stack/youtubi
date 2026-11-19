@@ -1,6 +1,7 @@
 import ChannelProfile from '../models/ChannelProfile.js';
 import BrainMemory from '../models/BrainMemory.js';
 import VideoLog from '../models/VideoLog.js';
+import { learnChannelPerformance } from './analyticsOptimizer.js';
 import { createGeminiClient, GEMINI_TEXT_MODELS, withGeminiModels } from './geminiApiKeys.js';
 
 function parseJson(text) {
@@ -131,14 +132,19 @@ Previous JSON: ${JSON.stringify(result)}`));
 }
 
 export async function generateShort(channelId) {
+  await learnChannelPerformance(channelId);
   const [profile, memory, recentVideos] = await Promise.all([
     ChannelProfile.findOne({ channelId }).lean(),
     BrainMemory.findOne({ channelId }).lean(),
     VideoLog.find({ channelId }).sort({ publishedAt: -1 }).limit(30).select('title hook').lean()
   ]);
   if (!profile) throw new Error(`Channel profile not found for ${channelId}.`);
-  const rules = memory?.selfCorrectionEnabled ? (memory.mistakeRules || []).join('\n') : '';
-  const tactics = memory?.selfCorrectionEnabled ? (memory.winningTactics || []).join('\n') : '';
+  const learningEnabled = Boolean(memory?.selfCorrectionEnabled);
+  const rules = learningEnabled ? (memory.mistakeRules || []).join('\n') : '';
+  const tactics = learningEnabled ? (memory.winningTactics || []).join('\n') : '';
+  const winningBlueprint = learningEnabled ? memory?.winningBlueprint : '';
+  const scorecard = learningEnabled ? memory?.performanceScorecard || [] : [];
+  const nextVideoStrategy = learningEnabled ? memory?.nextVideoStrategy : '';
   const blueprint = profile.metadataBlueprint || {};
   const prompt = `Return only JSON with keys hook,title,script,description,tags,scenePrompts,subtitleBeats.
 Create one YouTube Short for channel ${profile.channelTitle}. Niche: ${profile.niche}. Language: ${profile.language}.
@@ -151,6 +157,10 @@ Append this locked suffix to the title: ${blueprint.titleSuffix || '(none)'}.
 Append this locked footer to the description: ${blueprint.fixedDescriptionFooter || '(none)'}.
 Avoid these recent titles/hooks: ${JSON.stringify(recentVideos)}.
 Winning tactics: ${tactics}. Mistake rules: ${rules}.
+Channel winning blueprint: ${winningBlueprint || 'Not learned yet'}.
+Historical performance scorecard (winners and underperformers): ${JSON.stringify(scorecard)}.
+Next-video strategy: ${nextVideoStrategy || 'Use an immediate, specific 3-second hook; keep visual and spoken pacing tight; end with a visual or idea that can loop naturally.'}.
+Engineer the opening for 3-second retention, the ending for completion and replay, and the title/tags for accurate channel-specific CTR. Follow the performance evidence above; do not make unsupported promises or claims.
 Do not invent channel analytics or claim unsupported facts.`;
   const result = await generateScriptDraft(prompt, async (draftPrompt) => {
     return withGeminiModels(GEMINI_TEXT_MODELS, async (apiKey, model) => {

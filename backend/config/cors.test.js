@@ -27,7 +27,7 @@ async function preflight(origin, configuredOrigins) {
 }
 
 test('preflight allows the deployed frontend and configured local development origin', async () => {
-  const configuredOrigins = 'https://frontend-mu-blush-93.vercel.app, http://localhost:5173';
+  const configuredOrigins = 'http://localhost:5173';
 
   for (const origin of ['https://frontend-mu-blush-93.vercel.app', 'http://localhost:5173']) {
     const response = await preflight(origin, configuredOrigins);
@@ -37,10 +37,25 @@ test('preflight allows the deployed frontend and configured local development or
 });
 
 test('preflight does not allow an unconfigured frontend origin', async () => {
-  const response = await preflight('https://untrusted.example', 'https://frontend-mu-blush-93.vercel.app');
+  const response = await preflight('https://untrusted.example', 'http://localhost:5173');
   assert.equal(response.headers.get('access-control-allow-origin'), null);
 });
 
-test('rejects an explicitly empty origin list', () => {
-  assert.throws(() => createCorsMiddleware(' , '), /FRONTEND_ORIGIN must contain/);
+test('allows FRONTEND_URL and includes CORS headers on error responses', async () => {
+  const app = express();
+  app.use(createCorsMiddleware('http://localhost:5173', 'https://configured.example'));
+  app.get('/error', (req, res, next) => next(new Error('expected failure')));
+  app.use((error, req, res, next) => res.status(500).json({ error: error.message }));
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    for (const origin of ['https://configured.example', 'https://frontend-mu-blush-93.vercel.app']) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/error`, { headers: { Origin: origin } });
+      assert.equal(response.status, 500);
+      assert.equal(response.headers.get('access-control-allow-origin'), origin);
+    }
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
 });

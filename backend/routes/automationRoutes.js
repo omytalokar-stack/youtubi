@@ -13,7 +13,13 @@ function requireCronSecret(req, res, next) {
 }
 
 router.post('/publish/:channelId', async (req, res, next) => {
-  try { res.json({ result: await publishNow(req.params.channelId) }); } catch (error) { next(error); }
+  const { channelId } = req.params;
+  res.status(202).json({ accepted: true, channelId, message: 'Native Short generation and publishing started.' });
+  setImmediate(() => {
+    publishNow(channelId).catch((error) => {
+      console.error(`Background publish failed for ${channelId}:`, error);
+    });
+  });
 });
 router.post('/trigger', requireCronSecret, async (req, res, next) => {
   try { res.json(await runScheduledTrigger()); } catch (error) { next(error); }
