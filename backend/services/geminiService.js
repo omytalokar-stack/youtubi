@@ -131,8 +131,9 @@ Previous JSON: ${JSON.stringify(result)}`));
   throw new Error('Unable to generate a script within the required word count.');
 }
 
-export async function generateShort(channelId) {
+export async function generateShort(channelId, { onWriting } = {}) {
   await learnChannelPerformance(channelId);
+  onWriting?.();
   const [profile, memory, recentVideos] = await Promise.all([
     ChannelProfile.findOne({ channelId }).lean(),
     BrainMemory.findOne({ channelId }).lean(),

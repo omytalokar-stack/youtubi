@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import express from 'express';
 import test from 'node:test';
 import ChannelProfile from '../models/ChannelProfile.js';
+import { updatePipelineStatus } from '../services/queueWorkerService.js';
 import automationRoutes from './automationRoutes.js';
 
 test('manual publish acknowledges immediately and reports background failures', async () => {
@@ -67,6 +68,44 @@ test('GET trigger accepts cron-job.org webhooks with the configured cron secret'
     assert.equal(response.status, 202);
     assert.deepEqual(await response.json(), { accepted: true, message: 'Scheduled upload check started.' });
     await triggerStarted;
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
+});
+
+test('channel status is isolated and its event stream emits later stage changes', async (t) => {
+  const originalExists = ChannelProfile.exists;
+  const channelId = `UC${'r'.repeat(22)}`;
+  ChannelProfile.exists = async () => ({ _id: 'profile' });
+  t.after(() => { ChannelProfile.exists = originalExists; });
+  updatePipelineStatus(channelId, 'writing', { lastVideoTitle: 'Scoped Short' });
+
+  const app = express();
+  app.use('/api/automation', automationRoutes);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}/api/automation`;
+    const invalid = await fetch(`${baseUrl}/status/not-a-channel`);
+    assert.equal(invalid.status, 400);
+
+    const response = await fetch(`${baseUrl}/status/${channelId}`);
+    const status = await response.json();
+    assert.equal(status.channelId, channelId);
+    assert.equal(status.stage, 'writing');
+    assert.equal(status.lastVideoTitle, 'Scoped Short');
+    assert.ok(status.timestamp);
+
+    const eventResponse = await fetch(`${baseUrl}/events/${channelId}`);
+    assert.match(eventResponse.headers.get('content-type'), /text\/event-stream/);
+    const reader = eventResponse.body.getReader();
+    const initial = await reader.read();
+    assert.match(new TextDecoder().decode(initial.value), /"stage":"writing"/);
+    const nextEvent = reader.read();
+    updatePipelineStatus(channelId, 'uploading', { lastVideoTitle: 'Scoped Short' });
+    assert.match(new TextDecoder().decode((await nextEvent).value), /"stage":"uploading"/);
+    await reader.cancel();
   } finally {
     server.close();
     await once(server, 'close');

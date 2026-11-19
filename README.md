@@ -18,6 +18,8 @@ Set each channel's independent daily upload time in Settings. Configure cron-job
 
 `POST /api/automation/audit-analytics` is protected by the same secret and requires `{ "channelId": "..." }`. The dashboard's manual audit asks for that secret at run time; it is not embedded in the frontend bundle.
 
+`GET /api/analytics/:channelId` syncs channel totals and recent-video statistics from YouTube and stores them against that channel's profile and video logs. `POST /api/analytics/:channelId/audit` refreshes those statistics before running the protected learning audit. The Agent Brain listens for pipeline status events and polls `GET /api/automation/status/:channelId` every five seconds only while that channel is active.
+
 Before each Short, the backend fetches up to 30 recent channel videos, classifies relative winners and underperformers using view/impression velocity, CTR, retention, average view duration, and likes, then saves the performance scorecard and learned formulas/guardrails to that channel's Agent Brain. This requires the YouTube Analytics read-only scope; unavailable analytics metrics are logged and left as zero rather than fabricated. Manual publishing uses the selected channel's saved privacy setting. Review that channel's blueprint and upload visibility before publishing.
 
 ## Resource and data boundaries

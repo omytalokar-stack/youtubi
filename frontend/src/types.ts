@@ -47,9 +47,21 @@ export type Video = {
   views: number;
   likes: number;
   watchTimeMinutes: number;
+  impressions?: number;
+  ctr?: number;
+  averageViewDuration?: number;
+  retention?: number;
 };
 export type Stats = {
   channel: Channel;
   kpis: { views: number; subscribers: number; watchTimeMinutes: number; videos: number };
   recentVideos: Video[];
+};
+export type PipelineStage = 'idle' | 'dna' | 'writing' | 'rendering' | 'uploading' | 'completed' | 'failed';
+export type PipelineStatus = {
+  channelId: string;
+  stage: PipelineStage;
+  lastVideoTitle: string;
+  timestamp: string;
+  failedAtStage?: Exclude<PipelineStage, 'idle' | 'completed' | 'failed'>;
 };

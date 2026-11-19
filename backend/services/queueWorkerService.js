@@ -6,7 +6,7 @@ import { generateShort } from './geminiService.js';
 import { generateSceneAssets } from './visualService.js';
 import { generateVoiceover } from './ttsService.js';
 import { createJobDirectory, renderShort } from './renderService.js';
-import { uploadShort } from './youtubeService.js';
+import { getChannelStats, uploadShort } from './youtubeService.js';
 
 const LOCK_KEY = 'GLOBAL_RENDER_WORKER';
 export const RENDER_LOCK_TTL_MS = 15 * 60 * 1000;
@@ -15,6 +15,51 @@ export const SCHEDULE_WINDOW_MINUTES = 25;
 const DEFAULT_PUBLISH_TIME_IST = '16:00';
 const PUBLISH_TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 let processRenderActive = false;
+const pipelineStatuses = new Map();
+const pipelineListeners = new Map();
+
+export function updatePipelineStatus(channelId, stage, { lastVideoTitle, failedAtStage } = {}) {
+  const previous = pipelineStatuses.get(channelId);
+  const status = {
+    channelId,
+    stage,
+    lastVideoTitle: lastVideoTitle ?? previous?.lastVideoTitle ?? '',
+    timestamp: new Date().toISOString(),
+    ...(failedAtStage ? { failedAtStage } : {})
+  };
+  pipelineStatuses.set(channelId, status);
+  for (const listener of pipelineListeners.get(channelId) || []) {
+    try {
+      listener(status);
+    } catch (error) {
+      console.warn(`Could not send pipeline status to a listener for ${channelId}:`, error.message);
+    }
+  }
+  return status;
+}
+
+export async function getPipelineStatus(channelId) {
+  const current = pipelineStatuses.get(channelId);
+  if (current) return current;
+  const lastVideo = await VideoLog.findOne({ channelId })
+    .sort({ publishedAt: -1 }).select('title publishedAt').lean();
+  return {
+    channelId,
+    stage: 'idle',
+    lastVideoTitle: lastVideo?.title || '',
+    timestamp: lastVideo?.publishedAt ? new Date(lastVideo.publishedAt).toISOString() : new Date().toISOString()
+  };
+}
+
+export function subscribeToPipelineStatus(channelId, listener) {
+  const listeners = pipelineListeners.get(channelId) || new Set();
+  listeners.add(listener);
+  pipelineListeners.set(channelId, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) pipelineListeners.delete(channelId);
+  };
+}
 
 export function getIstSchedule(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -114,6 +159,7 @@ async function publishChannel(channelId, profile, { trackPublication = false, au
       throw new Error('The global render lock was lost; stopping before the next pipeline step.');
     }
   };
+  let stage = 'dna';
   try {
     if (autoPublished) {
       const currentProfile = await ChannelProfile.findOne({ channelId }).lean();
@@ -129,9 +175,18 @@ async function publishChannel(channelId, profile, { trackPublication = false, au
       }
       profile = currentProfile;
     }
+    updatePipelineStatus(channelId, stage);
     jobDir = createJobDirectory(channelId);
-    const generated = await generateShort(channelId);
+    const generated = await generateShort(channelId, {
+      onWriting: () => {
+        stage = 'writing';
+        updatePipelineStatus(channelId, stage);
+      }
+    });
     ensureLock();
+    updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
+    stage = 'rendering';
+    updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
     const sceneAssets = generateSceneAssets(generated.scenePrompts);
     ensureLock();
     const voice = await generateVoiceover(generated.script, profile.language, jobDir, renderController.signal);
@@ -141,13 +196,27 @@ async function publishChannel(channelId, profile, { trackPublication = false, au
       subtitleBeats: generated.subtitleBeats, jobDir, signal: renderController.signal
     });
     ensureLock();
+    stage = 'uploading';
+    updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
     const videoId = await uploadShort(channelId, file, generated, profile.automation.privacyStatus);
     await VideoLog.create({
       channelId, videoId, title: generated.title, hook: generated.hook,
       script: generated.script, tags: generated.tags, publishedAt: new Date()
     });
     if (trackPublication) await recordPublishedDate(channelId, getTodayIST(), autoPublished);
+    try {
+      await getChannelStats(channelId);
+    } catch (error) {
+      console.warn(`YouTube statistics refresh failed after publishing for ${channelId}:`, error.message);
+    }
+    stage = 'completed';
+    updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
     return { channelId, videoId, title: generated.title };
+  } catch (error) {
+    updatePipelineStatus(channelId, 'failed', {
+      failedAtStage: stage
+    });
+    throw error;
   } finally {
     clearInterval(heartbeat);
     try {

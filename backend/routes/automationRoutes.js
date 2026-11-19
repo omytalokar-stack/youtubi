@@ -1,9 +1,13 @@
 import { Router } from 'express';
-import { publishNow, runScheduledTrigger } from '../services/queueWorkerService.js';
+import ChannelProfile from '../models/ChannelProfile.js';
+import {
+  getPipelineStatus, publishNow, runScheduledTrigger, subscribeToPipelineStatus
+} from '../services/queueWorkerService.js';
 import { auditChannel } from '../services/analyticsOptimizer.js';
 import { chatWithGemini } from '../services/geminiService.js';
 
 const router = Router();
+const channelIdPattern = /^UC[A-Za-z0-9_-]{22}$/;
 let scheduledTriggerRunning = false;
 let scheduledTriggerPending = false;
 
@@ -41,6 +45,47 @@ router.post('/publish/:channelId', async (req, res, next) => {
       console.error(`Background publish failed for ${channelId}:`, error);
     });
   });
+});
+router.get('/status/:channelId', async (req, res, next) => {
+  try {
+    const { channelId } = req.params;
+    if (!channelIdPattern.test(channelId)) return res.status(400).json({ error: 'Invalid YouTube channel ID.' });
+    if (!await ChannelProfile.exists({ channelId })) return res.status(404).json({ error: 'Channel profile not found.' });
+    res.json(await getPipelineStatus(channelId));
+  } catch (error) { next(error); }
+});
+router.get('/events/:channelId', async (req, res, next) => {
+  const { channelId } = req.params;
+  if (!channelIdPattern.test(channelId)) return res.status(400).json({ error: 'Invalid YouTube channel ID.' });
+  let unsubscribe = () => {};
+  let heartbeat;
+  try {
+    if (!await ChannelProfile.exists({ channelId })) return res.status(404).json({ error: 'Channel profile not found.' });
+    res.set({
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'Content-Type': 'text/event-stream'
+    });
+    res.flushHeaders();
+    const send = (status) => {
+      if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(status)}\n\n`);
+    };
+    unsubscribe = subscribeToPipelineStatus(channelId, send);
+    heartbeat = setInterval(() => {
+      if (!res.writableEnded && !res.destroyed) res.write(': keep-alive\n\n');
+    }, 25000);
+    heartbeat.unref();
+    res.on('close', () => {
+      unsubscribe();
+      clearInterval(heartbeat);
+    });
+    send(await getPipelineStatus(channelId));
+  } catch (error) {
+    unsubscribe();
+    clearInterval(heartbeat);
+    if (res.headersSent) res.end();
+    else next(error);
+  }
 });
 router.get('/trigger', requireCronSecret, triggerScheduled);
 router.post('/trigger', requireCronSecret, triggerScheduled);

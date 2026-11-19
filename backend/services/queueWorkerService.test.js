@@ -4,7 +4,8 @@ import AutomationLock from '../models/AutomationLock.js';
 import ChannelProfile from '../models/ChannelProfile.js';
 import {
   acquireRenderLock, getIstSchedule, isChannelDueForSchedule, renewRenderLock,
-  RENDER_LOCK_HEARTBEAT_MS, RENDER_LOCK_TTL_MS, recordPublishedDate, runScheduledTrigger,
+  getPipelineStatus, RENDER_LOCK_HEARTBEAT_MS, RENDER_LOCK_TTL_MS, recordPublishedDate,
+  runScheduledTrigger, subscribeToPipelineStatus, updatePipelineStatus,
   SCHEDULE_WINDOW_MINUTES
 } from './queueWorkerService.js';
 
@@ -129,4 +130,24 @@ test('aborts the active render when its heartbeat cannot renew the global lock',
   assert.equal(await renewRenderLock('channel-a', controller), false);
   assert.equal(controller.signal.aborted, true);
   assert.match(controller.signal.reason.message, /lock was lost/);
+});
+
+test('publishes channel-scoped pipeline stages and preserves the generated video title', async () => {
+  const channelId = `UC${'j'.repeat(22)}`;
+  const otherChannelId = `UC${'k'.repeat(22)}`;
+  const events = [];
+  const unsubscribe = subscribeToPipelineStatus(channelId, (status) => events.push(status));
+  const active = updatePipelineStatus(channelId, 'rendering', { lastVideoTitle: 'A new Short' });
+  updatePipelineStatus(otherChannelId, 'uploading', { lastVideoTitle: 'Another Short' });
+  const status = await getPipelineStatus(channelId);
+  const otherStatus = await getPipelineStatus(otherChannelId);
+  unsubscribe();
+
+  assert.equal(active.channelId, channelId);
+  assert.equal(active.stage, 'rendering');
+  assert.equal(status.lastVideoTitle, 'A new Short');
+  assert.equal(status.timestamp, active.timestamp);
+  assert.equal(otherStatus.channelId, otherChannelId);
+  assert.equal(otherStatus.lastVideoTitle, 'Another Short');
+  assert.deepEqual(events.map((event) => event.stage), ['rendering']);
 });

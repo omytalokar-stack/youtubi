@@ -22,6 +22,13 @@ const ChannelProfileSchema = new mongoose.Schema({
       message: 'lastAutoPublishedDateIst must use YYYY-MM-DD format.'
     }
   },
+  youtubeStats: {
+    subscriberCount: { type: Number, default: 0 },
+    viewCount: { type: Number, default: 0 },
+    videoCount: { type: Number, default: 0 },
+    watchTimeMinutes: { type: Number, default: 0 },
+    syncedAt: { type: Date, default: null }
+  },
   automation: {
     enabled: { type: Boolean, default: false },
     scheduleHourIST: { type: Number, min: 0, max: 23, default: 10 },

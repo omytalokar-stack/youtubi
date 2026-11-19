@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import express from 'express';
 import test from 'node:test';
 import ChannelProfile from '../models/ChannelProfile.js';
+import YouTubeCredential from '../models/YouTubeCredential.js';
 import channelRoutes from './channelRoutes.js';
 
 test('new channel profiles default to an enabled 16:00 IST schedule', () => {
@@ -79,6 +80,62 @@ test('PATCH schedule validates channel IDs and updates only the targeted channel
     assert.equal((await response.json()).profile.publishTimeIst, '16:05');
     assert.deepEqual(updateCall.filter, { channelId });
     assert.deepEqual(updateCall.update.$set, { autoPublishEnabled: false, publishTimeIst: '16:05' });
+    assert.deepEqual(updateCall.options, { new: true, runValidators: true });
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
+});
+
+test('PUT profile persists the selected visibility only for its channel', async (t) => {
+  const originalCredentialExists = YouTubeCredential.exists;
+  const originalProfileExists = ChannelProfile.exists;
+  const originalFindOneAndUpdate = ChannelProfile.findOneAndUpdate;
+  const channelId = `UC${'p'.repeat(22)}`;
+  let updateCall;
+  YouTubeCredential.exists = async (filter) => filter.channelId === channelId;
+  ChannelProfile.exists = async () => null;
+  ChannelProfile.findOneAndUpdate = (filter, update, options) => {
+    updateCall = { filter, update, options };
+    return {
+      lean: async () => ({
+        channelId,
+        channelTitle: 'Visibility test',
+        automation: { privacyStatus: 'public', scheduleHourIST: 10, scheduleMinuteIST: 0 }
+      })
+    };
+  };
+  t.after(() => {
+    YouTubeCredential.exists = originalCredentialExists;
+    ChannelProfile.exists = originalProfileExists;
+    ChannelProfile.findOneAndUpdate = originalFindOneAndUpdate;
+  });
+
+  const app = express();
+  app.use(express.json());
+  app.use('/api', channelRoutes);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/api/profile/${channelId}`;
+    const invalid = await fetch(url, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ automation: { privacyStatus: 'PUBLIC' } })
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(updateCall, undefined);
+
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ automation: { privacyStatus: 'public' } })
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.profile.automation.privacyStatus, 'public');
+    assert.deepEqual(updateCall.filter, { channelId });
+    assert.equal(updateCall.update.$set['automation.privacyStatus'], 'public');
     assert.deepEqual(updateCall.options, { new: true, runValidators: true });
   } finally {
     server.close();

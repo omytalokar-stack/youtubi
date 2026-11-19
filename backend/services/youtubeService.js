@@ -2,6 +2,7 @@ import { google } from 'googleapis';
 import YouTubeCredential from '../models/YouTubeCredential.js';
 import ChannelProfile from '../models/ChannelProfile.js';
 import BrainMemory from '../models/BrainMemory.js';
+import VideoLog from '../models/VideoLog.js';
 import { decryptToken, encryptToken, signOAuthState } from './cryptoService.js';
 
 function createOAuthClient() {
@@ -105,6 +106,7 @@ export async function getChannelStats(channelId) {
   if (!channel) throw new Error(`YouTube returned no channel for ${channelId}.`);
   const videoIds = (videoResponse.data.items || []).map((video) => video.id?.videoId).filter(Boolean);
   const details = videoIds.length ? await youtube.videos.list({ part: ['statistics', 'snippet'], id: videoIds }) : { data: { items: [] } };
+  const analyticsByVideo = videoIds.length ? await fetchAnalyticsMetrics(auth, channelId, videoIds) : new Map();
   const analytics = google.youtubeAnalytics({ version: 'v2', auth });
   let watchTimeMinutes = 0;
   const watchByVideo = new Map();
@@ -128,7 +130,7 @@ export async function getChannelStats(channelId) {
     if (error.code !== 403 && error.code !== 400) throw error;
     console.warn(`YouTube Analytics unavailable for ${channelId}: ${error.message}`);
   }
-  return {
+  const stats = {
     channel: { channelId, channelTitle: channel.snippet?.title, thumbnailUrl: channel.snippet?.thumbnails?.default?.url || '' },
     kpis: {
       views: Number(channel.statistics?.viewCount || 0),
@@ -139,9 +141,53 @@ export async function getChannelStats(channelId) {
     recentVideos: (details.data.items || []).map((video) => ({
       videoId: video.id, title: video.snippet?.title || '', publishedAt: video.snippet?.publishedAt || '',
       views: Number(video.statistics?.viewCount || 0), likes: Number(video.statistics?.likeCount || 0),
-      watchTimeMinutes: watchByVideo.get(video.id) || 0
+      watchTimeMinutes: watchByVideo.get(video.id) || analyticsByVideo.get(video.id)?.watchTimeMinutes || 0,
+      impressions: analyticsByVideo.get(video.id)?.impressions || 0,
+      ctr: analyticsByVideo.get(video.id)?.ctr || 0,
+      averageViewDuration: analyticsByVideo.get(video.id)?.averageViewDuration || 0,
+      retention: analyticsByVideo.get(video.id)?.retention || 0
     }))
   };
+  await persistChannelStats(channelId, stats);
+  return stats;
+}
+
+export async function persistChannelStats(channelId, stats) {
+  const profile = await ChannelProfile.findOneAndUpdate(
+    { channelId },
+    { $set: { youtubeStats: {
+      subscriberCount: stats.kpis.subscribers,
+      viewCount: stats.kpis.views,
+      videoCount: stats.kpis.videos,
+      watchTimeMinutes: stats.kpis.watchTimeMinutes,
+      syncedAt: new Date()
+    } } },
+    { new: true, runValidators: true }
+  );
+  if (!profile) throw new Error(`Channel profile not found for ${channelId}; YouTube statistics were not saved.`);
+
+  if (stats.recentVideos.length) {
+    await VideoLog.bulkWrite(stats.recentVideos.map((video) => ({
+      updateOne: {
+        filter: { channelId, videoId: video.videoId },
+        update: {
+          $set: {
+            title: video.title,
+            publishedAt: video.publishedAt ? new Date(video.publishedAt) : new Date(),
+            views: video.views,
+            likes: video.likes,
+            impressions: video.impressions,
+            ctr: video.ctr,
+            averageViewDuration: video.averageViewDuration,
+            retention: video.retention,
+            watchTimeMinutes: video.watchTimeMinutes
+          },
+          $setOnInsert: { hook: '', script: '', tags: [] }
+        },
+        upsert: true
+      }
+    })));
+  }
 }
 
 async function fetchAnalyticsMetrics(auth, channelId, videoIds) {
@@ -212,10 +258,11 @@ export async function fetchRecentVideoAnalytics(channelId, limit = 30) {
   });
 }
 
-export async function uploadShort(channelId, filePath, metadata, privacyStatus) {
-  const auth = await getChannelAuth(channelId);
-  const youtube = google.youtube({ version: 'v3', auth });
-  const response = await youtube.videos.insert({
+export function buildShortUploadRequest(metadata, privacyStatus) {
+  if (!['private', 'unlisted', 'public'].includes(privacyStatus)) {
+    throw new Error(`Unsupported YouTube privacy status: ${privacyStatus}.`);
+  }
+  return {
     part: ['snippet', 'status'],
     requestBody: {
       snippet: {
@@ -225,7 +272,15 @@ export async function uploadShort(channelId, filePath, metadata, privacyStatus) 
         categoryId: '22'
       },
       status: { privacyStatus, selfDeclaredMadeForKids: false }
-    },
+    }
+  };
+}
+
+export async function uploadShort(channelId, filePath, metadata, privacyStatus) {
+  const auth = await getChannelAuth(channelId);
+  const youtube = google.youtube({ version: 'v3', auth });
+  const response = await youtube.videos.insert({
+    ...buildShortUploadRequest(metadata, privacyStatus),
     media: { body: (await import('node:fs')).createReadStream(filePath) }
   });
   if (!response.data.id) throw new Error('YouTube upload completed without returning a video ID.');

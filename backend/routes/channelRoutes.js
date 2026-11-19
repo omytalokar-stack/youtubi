@@ -68,10 +68,18 @@ router.get('/profile/:channelId', async (req, res, next) => {
 router.put('/profile/:channelId', async (req, res, next) => {
   try {
     const { channelId } = req.params;
+    if (!channelIdPattern.test(channelId)) return res.status(400).json({ error: 'Invalid YouTube channel ID.' });
     if (!await channelCredentialExists(channelId)) return res.status(404).json({ error: 'YouTube channel is not connected.' });
     const input = req.body || {};
     if (input.language && !languages.includes(input.language)) return res.status(400).json({ error: 'Unsupported language.' });
-    if (input.automation?.privacyStatus && !privacyStatuses.includes(input.automation.privacyStatus)) return res.status(400).json({ error: 'Unsupported privacy status.' });
+    if (input.automation !== undefined &&
+        (!input.automation || typeof input.automation !== 'object' || Array.isArray(input.automation))) {
+      return res.status(400).json({ error: 'Automation settings must be an object.' });
+    }
+    if (input.automation?.privacyStatus !== undefined &&
+        (typeof input.automation.privacyStatus !== 'string' || !privacyStatuses.includes(input.automation.privacyStatus))) {
+      return res.status(400).json({ error: 'Unsupported privacy status.' });
+    }
     if (input.automation?.scheduleHourIST !== undefined && input.automation?.scheduleMinuteIST !== undefined) {
       const occupied = await ChannelProfile.exists({
         channelId: { $ne: channelId },
@@ -98,7 +106,8 @@ router.put('/profile/:channelId', async (req, res, next) => {
       if (privacyStatus !== undefined) update['automation.privacyStatus'] = privacyStatus;
     }
     const profile = await ChannelProfile.findOneAndUpdate({ channelId }, { $set: update }, { new: true, runValidators: true }).lean();
-    res.json({ profile: profile && withScheduleDefaults(profile) });
+    if (!profile) return res.status(404).json({ error: 'Channel profile not found.' });
+    res.json({ profile: withScheduleDefaults(profile) });
   } catch (error) { next(error); }
 });
 router.get('/brain/:channelId', async (req, res, next) => {

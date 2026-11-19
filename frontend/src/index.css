@@ -246,6 +246,8 @@ td:first-child { max-width: 250px; overflow: hidden; text-overflow: ellipsis; }
 .pipeline-node { position: relative; z-index: 1; display: grid; width: 29px; height: 29px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--panel); color: var(--subtle); font: 9px 'DM Mono', monospace; }
 .pipeline-node.pipeline-done { border-color: #83d6ae44; background: #83d6ae12; color: var(--green); }
 .pipeline-node.pipeline-current { border-color: #b6a4ff66; background: var(--accent-wash); color: var(--accent); box-shadow: 0 0 0 4px #b6a4ff0b; }
+.pipeline-node.pipeline-failed { border-color: #ff828266; background: #ff828212; color: #ff8282; }
+.pipeline-status { margin-top: 15px; color: var(--muted); font-size: 10px; }
 .pipeline-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .pipeline-copy strong { overflow: hidden; color: var(--text); font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .pipeline-copy span { overflow: hidden; color: var(--subtle); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }

@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
 import { createCorsMiddleware } from './config/cors.js';
 import youtubeRoutes from './routes/youtubeRoutes.js';
+import analyticsRoutes from './routes/analyticsRoutes.js';
 import channelRoutes from './routes/channelRoutes.js';
 import automationRoutes from './routes/automationRoutes.js';
 
@@ -26,6 +27,7 @@ app.use((req, res, next) => {
   });
 });
 app.use('/api/youtube', youtubeRoutes);
+app.use('/api/analytics', analyticsRoutes);
 app.use('/api', channelRoutes);
 app.use('/api/automation', automationRoutes);
 app.use((req, res) => res.status(404).json({ error: 'Route not found.' }));

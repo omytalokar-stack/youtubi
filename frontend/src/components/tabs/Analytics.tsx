@@ -1,17 +1,31 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowDownRight, ArrowUpRight, Clock3, Eye, Heart, LoaderCircle, Play, Users, Video } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useApp } from '../../context/AppContext';
 import { Modal } from '../Modal';
+import type { Stats } from '../../types';
 
 const number = (value: number) => new Intl.NumberFormat('en', { notation: value > 999999 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
 
 export function Analytics() {
-  const { channelId, stats, refresh, setNotice } = useApp();
+  const { channelId, stats, loading, syncAnalytics, updateSyncedStats, setNotice } = useApp();
   const [auditing, setAuditing] = useState(false);
   const [audit, setAudit] = useState<{ winningTactic: string; mistakeRule: string } | null>(null);
   const [auditAuthOpen, setAuditAuthOpen] = useState(false);
   const [cronSecret, setCronSecret] = useState('');
+  const attemptedSync = useRef(new Set<string>());
+  useEffect(() => {
+    const noCachedStats = !stats || (
+      stats.kpis.views === 0 && stats.kpis.subscribers === 0 &&
+      stats.kpis.videos === 0 && stats.kpis.watchTimeMinutes === 0 &&
+      stats.recentVideos.length === 0
+    );
+    if (loading || !channelId || !noCachedStats || attemptedSync.current.has(channelId)) return;
+    attemptedSync.current.add(channelId);
+    syncAnalytics().catch((error: unknown) => {
+      setNotice(error instanceof Error ? error.message : 'Could not sync channel analytics.');
+    });
+  }, [channelId, loading, setNotice, stats, syncAnalytics]);
   const metrics = [
     { label: 'Total views', value: number(stats?.kpis.views || 0), icon: Eye, period: 'LIFETIME', change: 'Lifetime', positive: true },
     { label: 'Subscribers', value: number(stats?.kpis.subscribers || 0), icon: Users, period: 'CURRENT', change: 'Current audience', positive: true },
@@ -21,14 +35,17 @@ export function Analytics() {
 
   async function runAudit() {
     const secret = cronSecret.trim();
-    if (!secret) return;
+    if (!secret || !channelId) return;
     setAuditing(true); setAudit(null);
     try {
-      const { audit: result } = await api<{ audit: { winningTactic: string; mistakeRule: string } }>('/automation/audit-analytics', {
-        method: 'POST', headers: { 'x-cron-secret': secret }, body: JSON.stringify({ channelId })
+      const { audit: result, stats: syncedStats } = await api<{
+        audit: { winningTactic: string; mistakeRule: string };
+        stats: Stats;
+      }>(`/analytics/${encodeURIComponent(channelId)}/audit`, {
+        method: 'POST', headers: { 'x-cron-secret': secret }
       });
       setAudit(result); setNotice('Channel analytics audited and brain updated.');
-      await refresh();
+      updateSyncedStats(channelId, syncedStats);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Auto-audit failed.');
     } finally {
@@ -53,8 +70,8 @@ export function Analytics() {
     <div className="content-grid">
       <section className="panel recent-panel">
         <div className="section-heading"><div><span className="section-kicker">LATEST PUBLISHING</span><h2>Recent videos</h2></div><span className="small-muted">Last 10 uploads</span></div>
-        {!stats?.recentVideos.length ? <div className="empty-table"><span className="empty-icon"><Video size={20} /></span><strong>No recent uploads</strong><span>Published Shorts will appear here with performance details.</span></div> : <div className="table-scroll"><table><thead><tr><th>VIDEO</th><th>PUBLISHED</th><th><Eye size={13} /> VIEWS</th><th><Heart size={13} /> LIKES</th><th>WATCH TIME</th></tr></thead><tbody>
-          {stats.recentVideos.map((video) => <tr key={video.videoId}><td><a href={`https://www.youtube.com/watch?v=${encodeURIComponent(video.videoId)}`} target="_blank" rel="noreferrer" className="video-title">{video.title}</a><span className="video-id">{video.videoId}</span></td><td>{video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : '—'}</td><td>{number(video.views)}</td><td>{number(video.likes)}</td><td>{video.watchTimeMinutes ? `${number(video.watchTimeMinutes)} min` : '—'}</td></tr>)}
+        {!stats?.recentVideos.length ? <div className="empty-table"><span className="empty-icon"><Video size={20} /></span><strong>No recent uploads</strong><span>Published Shorts will appear here with performance details.</span></div> : <div className="table-scroll"><table><thead><tr><th>VIDEO</th><th>PUBLISHED</th><th><Eye size={13} /> VIEWS</th><th><Heart size={13} /> LIKES</th><th>CTR EST.</th><th>WATCH TIME</th></tr></thead><tbody>
+          {stats.recentVideos.map((video) => <tr key={video.videoId}><td><a href={`https://www.youtube.com/watch?v=${encodeURIComponent(video.videoId)}`} target="_blank" rel="noreferrer" className="video-title">{video.title}</a><span className="video-id">{video.videoId}</span></td><td>{video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : '—'}</td><td>{number(video.views)}</td><td>{number(video.likes)}</td><td>{video.ctr ? `${number(video.ctr)}%` : '—'}</td><td>{video.watchTimeMinutes ? `${number(video.watchTimeMinutes)} min` : '—'}</td></tr>)}
         </tbody></table></div>}
       </section>
       <aside className="panel insight-panel">

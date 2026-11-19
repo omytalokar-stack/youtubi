@@ -13,6 +13,8 @@ type AppContextValue = {
   notice: string;
   setChannelId: (id: string) => void;
   refresh: () => Promise<void>;
+  syncAnalytics: () => Promise<Stats>;
+  updateSyncedStats: (channelId: string, stats: Stats) => void;
   saveProfile: (profile: Partial<Profile>) => Promise<void>;
   saveSchedule: (schedule: Pick<Profile, 'autoPublishEnabled' | 'publishTimeIst'>) => Promise<Profile>;
   setNotice: (notice: string) => void;
@@ -63,6 +65,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally { setLoading(false); }
   }, [channelId]);
 
+  const syncAnalytics = useCallback(async () => {
+    if (!channelId) throw new Error('Connect and select a YouTube channel first.');
+    const requestedChannelId = channelId;
+    const result = await api<Stats>(`/analytics/${encodeURIComponent(requestedChannelId)}`);
+    if (requestedChannelId === channelId) setStats(result);
+    return result;
+  }, [channelId]);
+
+  const updateSyncedStats = useCallback((requestedChannelId: string, result: Stats) => {
+    if (requestedChannelId === channelId) setStats(result);
+  }, [channelId]);
+
   useEffect(() => { void refresh(); }, [refresh]);
 
   const saveProfile = useCallback(async (partial: Partial<Profile>) => {
@@ -86,8 +100,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({
     channels, channelId, profile, brain, stats, loading, error, notice,
-    setChannelId, refresh, saveProfile, saveSchedule, setNotice
-  }), [channels, channelId, profile, brain, stats, loading, error, notice, refresh, saveProfile, saveSchedule]);
+    setChannelId, refresh, syncAnalytics, updateSyncedStats, saveProfile, saveSchedule, setNotice
+  }), [channels, channelId, profile, brain, stats, loading, error, notice, refresh, syncAnalytics, updateSyncedStats, saveProfile, saveSchedule]);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
