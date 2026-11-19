@@ -493,6 +493,7 @@ td:first-child { max-width: 250px; overflow: hidden; text-overflow: ellipsis; }
   .chat-messages { padding-right: 14px; padding-left: 14px; }
   .connected-status { font-size: 7px; }
   .button, .channel-picker, .channel-menu button, .nav-item, .theme-toggle, .top-icon, .memory-title button, .switch, .composer-add, .send-button, .icon-btn, .prompt-grid button { min-height: 44px; }
+  .field input, .field select, .chat-composer input { min-height: 44px; }
   .settings-layout { gap: 10px; }
   .settings-panel { min-width: 0; padding: 15px 13px; }
   .schedule-time-field, .schedule-time-field input { width: 100%; max-width: none; }
