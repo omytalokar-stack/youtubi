@@ -34,7 +34,14 @@ const ChannelProfileSchema = new mongoose.Schema({
     scheduleHourIST: { type: Number, min: 0, max: 23, default: 10 },
     scheduleMinuteIST: { type: Number, min: 0, max: 59, default: 0 },
     privacyStatus: { type: String, enum: ['private', 'unlisted', 'public'], default: 'private' },
-    lastPublishedDateIST: { type: String, default: '' }
+    lastPublishedDateIST: { type: String, default: '' },
+    omes: {
+      enabled: { type: Boolean, default: false },
+      frequency: { type: String, enum: ['daily', 'alternate'], default: 'daily' },
+      publishTimeIst: { type: String, default: '11:00', match: /^(?:[01]\d|2[0-3]):[0-5]\d$/ },
+      lastOmesRunAt: { type: Date, default: null },
+      lastOptimizedVideoId: { type: String, default: null }
+    }
   }
 }, { timestamps: true });
 

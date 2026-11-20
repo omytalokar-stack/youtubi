@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { ArrowUpRight, Check, Clock3, Copy, Download, ExternalLink, KeyRound, Server, Share2, ShieldCheck, Smartphone, Youtube } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, Check, Clock3, Copy, Download, ExternalLink, KeyRound, Play, RefreshCw, Server, Share2, ShieldCheck, Smartphone, Youtube } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../lib/api';
+import type { OmesAuditLog, OmesVideoHistory } from '../../types';
 
 const WEBHOOK_URL = 'https://youtubi.onrender.com/api/automation/trigger';
 
@@ -10,14 +11,37 @@ export function Settings() {
   const [connecting, setConnecting] = useState(false);
   const [autoPublishEnabled, setAutoPublishEnabled] = useState(true);
   const [publishTimeIst, setPublishTimeIst] = useState('16:00');
+  const [omesEnabled, setOmesEnabled] = useState(false);
+  const [omesFrequency, setOmesFrequency] = useState<'daily' | 'alternate'>('daily');
+  const [omesTimeIst, setOmesTimeIst] = useState('11:00');
+  const [omesSecret, setOmesSecret] = useState('');
+  const [omesVideos, setOmesVideos] = useState<OmesVideoHistory[]>([]);
+  const [omesAudits, setOmesAudits] = useState<OmesAuditLog[]>([]);
+  const [omesHistoryLoaded, setOmesHistoryLoaded] = useState(false);
+  const [loadingOmesHistory, setLoadingOmesHistory] = useState(false);
+  const [savingOmes, setSavingOmes] = useState(false);
+  const [runningOmes, setRunningOmes] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [scheduleSaved, setScheduleSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const activeChannel = channels.find((channel) => channel.channelId === channelId);
+  const latestAuditByVideo = new Map<string, OmesAuditLog>();
+  for (const audit of omesAudits) {
+    if (!latestAuditByVideo.has(audit.videoId)) latestAuditByVideo.set(audit.videoId, audit);
+  }
   useEffect(() => {
     setAutoPublishEnabled(profile?.autoPublishEnabled ?? true);
     setPublishTimeIst(profile?.publishTimeIst || '16:00');
-  }, [profile, channelId]);
+    setOmesEnabled(profile?.automation?.omes?.enabled ?? false);
+    setOmesFrequency(profile?.automation?.omes?.frequency || 'daily');
+    setOmesTimeIst(profile?.automation?.omes?.publishTimeIst || '11:00');
+  }, [profile]);
+  useEffect(() => {
+    setOmesSecret('');
+    setOmesVideos([]);
+    setOmesAudits([]);
+    setOmesHistoryLoaded(false);
+  }, [channelId]);
 
   async function connect() {
     setConnecting(true);
@@ -38,6 +62,64 @@ export function Settings() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not save this channel schedule.');
     } finally { setSavingSchedule(false); }
+  }
+  async function loadOmesHistory() {
+    if (!channelId || !omesSecret) {
+      setNotice('Enter the backend CRON_SECRET to load OMES history.');
+      return;
+    }
+    setLoadingOmesHistory(true);
+    try {
+      const history = await api<{ videos: OmesVideoHistory[]; auditLogs: OmesAuditLog[] }>(
+        `/channels/${encodeURIComponent(channelId)}/omes/history`,
+        { headers: { 'x-cron-secret': omesSecret } }
+      );
+      setOmesVideos(history.videos);
+      setOmesAudits(history.auditLogs);
+      setOmesHistoryLoaded(true);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not load OMES history.');
+    } finally { setLoadingOmesHistory(false); }
+  }
+  async function saveOmesSettings(event: FormEvent) {
+    event.preventDefault();
+    if (!channelId || !omesSecret) {
+      setNotice('Enter the backend CRON_SECRET to save OMES settings.');
+      return;
+    }
+    setSavingOmes(true);
+    try {
+      await api(`/channels/${encodeURIComponent(channelId)}/omes`, {
+        method: 'PUT',
+        headers: { 'x-cron-secret': omesSecret },
+        body: JSON.stringify({ enabled: omesEnabled, frequency: omesFrequency, publishTimeIst: omesTimeIst })
+      });
+      setNotice('OMES settings saved for this channel.');
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not save OMES settings.');
+    } finally { setSavingOmes(false); }
+  }
+  async function runOmesNow() {
+    if (!channelId || !omesSecret) {
+      setNotice('Enter the backend CRON_SECRET to run OMES.');
+      return;
+    }
+    if (!window.confirm('OMES will optimize the latest uploaded video and change its YouTube visibility to PUBLIC. Continue?')) return;
+    setRunningOmes(true);
+    try {
+      const response = await api<{ result: { skipped: boolean; reason?: string; title?: string } }>(
+        `/channels/${encodeURIComponent(channelId)}/omes/run`,
+        { method: 'POST', headers: { 'x-cron-secret': omesSecret } }
+      );
+      setNotice(response.result.skipped
+        ? response.result.reason || 'OMES did not change a video.'
+        : 'Latest video metadata optimized and published publicly.');
+      await loadOmesHistory();
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not run OMES.');
+    } finally { setRunningOmes(false); }
   }
   async function copyWebhookUrl() {
     try {
@@ -85,6 +167,41 @@ export function Settings() {
             <p>Set the cron-job.org timezone to Asia/Kolkata and trigger this URL daily at this channel’s exact IST time. If channels use different times, create a job for each time using this same URL. Add the <code>x-cron-secret</code> header when <code>CRON_SECRET</code> is configured. No 10-minute keep-alive pings are needed.</p>
           </div>
         </form>
+      </section>
+      <section className="panel settings-panel omes-panel">
+        <div className="section-heading"><div><span className="section-kicker">MANUAL UPLOAD AUTOMATION</span><h2>OMES · Metadata SEO & Publish</h2></div><Clock3 className="setting-icon" size={19} /></div>
+        <p className="settings-copy">Use OMES when you upload videos yourself. When enabled, scheduled automation skips Short generation and instead optimizes your latest completed upload.</p>
+        <div className="omes-warning"><AlertTriangle size={17} /><span><strong>Publishing permission:</strong> OMES changes the selected video's visibility to <b>Public</b>. Completed Private, Unlisted, and Public uploads are available; YouTube Studio drafts may not appear in the uploads list.</span></div>
+        <form className="omes-form" onSubmit={(event) => void saveOmesSettings(event)}>
+          <label className="field omes-secret-field"><span>Backend access secret <small>CRON_SECRET · kept only in this page's memory</small></span><input type="password" autoComplete="off" value={omesSecret} disabled={!channelId} onChange={(event) => setOmesSecret(event.target.value)} placeholder="Enter CRON_SECRET" /></label>
+          <div className="schedule-row omes-toggle-row">
+            <div className="schedule-info"><strong>OMES Mode {omesEnabled ? 'ON' : 'OFF'}</strong><span>{omesEnabled ? 'Scheduled runs will not create or upload new videos.' : 'Scheduled runs continue using the normal video pipeline.'}</span></div>
+            <button type="button" className={`switch ${omesEnabled ? 'switch-on' : ''}`} role="switch" aria-label="OMES Mode" aria-checked={omesEnabled} disabled={!channelId} onClick={() => setOmesEnabled((enabled) => !enabled)}><span /></button>
+          </div>
+          <div className="omes-settings-row">
+            <label className="field"><span>Schedule frequency</span><select value={omesFrequency} disabled={!channelId} onChange={(event) => setOmesFrequency(event.target.value as 'daily' | 'alternate')}><option value="daily">Daily</option><option value="alternate">Alternate days (44-hour minimum)</option></select></label>
+            <label className="field"><span>Publish time <small>Asia/Kolkata (IST)</small></span><input type="time" value={omesTimeIst} required disabled={!channelId} onChange={(event) => setOmesTimeIst(event.target.value)} /></label>
+          </div>
+          <div className="omes-actions">
+            <button className="button button-primary" disabled={savingOmes || !channelId}>{savingOmes ? 'Saving…' : 'Save OMES Settings'}</button>
+            <button type="button" className="button button-secondary" disabled={runningOmes || !channelId} onClick={() => void runOmesNow()}><Play size={14} />{runningOmes ? 'Optimizing…' : 'Optimize Latest Video Now'}</button>
+            <button type="button" className="button button-secondary" disabled={loadingOmesHistory || !channelId} onClick={() => void loadOmesHistory()}><RefreshCw size={14} />{loadingOmesHistory ? 'Loading…' : 'Load Video History'}</button>
+          </div>
+        </form>
+        {omesHistoryLoaded && <div className="omes-history">
+          <h3>Recent channel uploads & OMES changes</h3>
+          {omesVideos.length ? <div className="omes-history-scroll"><table className="omes-history-table"><thead><tr><th>Video</th><th>Visibility</th><th>Views</th><th>Latest optimization</th></tr></thead><tbody>
+            {omesVideos.map((video) => {
+              const audit = latestAuditByVideo.get(video.videoId);
+              return <tr key={video.videoId}>
+                <td><strong>{video.title || 'Untitled video'}</strong><small>{video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : 'Upload date unavailable'}</small></td>
+                <td><span className={`omes-status omes-status-${video.privacyStatus}`}>{video.privacyStatus}</span></td>
+                <td>{video.views.toLocaleString()}</td>
+                <td>{audit ? <><span>{audit.beforeTitle || '—'} → {audit.afterTitle}</span><small>{new Date(audit.optimizedAt).toLocaleString()}</small></> : <span className="omes-no-audit">Not optimized yet</span>}</td>
+              </tr>;
+            })}
+          </tbody></table></div> : <p className="omes-empty">No completed uploads were found on this channel.</p>}
+        </div>}
       </section>
     </div>
     <a className="docs-link" href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noreferrer">Google API setup guide <ExternalLink size={13} /></a>

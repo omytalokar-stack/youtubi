@@ -9,6 +9,7 @@ const VideoLogSchema = new mongoose.Schema({
   script: { type: String, default: '' },
   tags: { type: [String], default: [] },
   visualMediaIds: { type: [String], default: [] },
+  privacyStatus: { type: String, enum: ['private', 'unlisted', 'public'], default: null },
   views: { type: Number, default: 0 },
   impressions: { type: Number, default: 0 },
   ctr: { type: Number, default: 0 },

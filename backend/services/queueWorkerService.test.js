@@ -3,9 +3,9 @@ import test from 'node:test';
 import AutomationLock from '../models/AutomationLock.js';
 import ChannelProfile from '../models/ChannelProfile.js';
 import {
-  acquireRenderLock, getIstSchedule, isChannelDueForSchedule, renewRenderLock,
+  acquireRenderLock, getIstSchedule, isChannelDueForSchedule, isOmesDueForSchedule, renewRenderLock,
   getPipelineStatus, isScheduledChannelStillEligible, RENDER_LOCK_HEARTBEAT_MS,
-  RENDER_LOCK_TTL_MS, recordPublishedDate,
+  RENDER_LOCK_TTL_MS, recordPublishedDate, publishNow,
   runScheduledTrigger, subscribeToPipelineStatus, updatePipelineStatus,
   SCHEDULE_WINDOW_MINUTES
 } from './queueWorkerService.js';
@@ -35,6 +35,28 @@ test('does not reschedule a channel already published on the current IST date', 
   }, current), false);
 });
 
+test('schedules OMES at its own IST time and enforces the alternate-day cooldown', () => {
+  const now = new Date('2026-11-18T05:30:00.000Z');
+  const current = getIstSchedule(now);
+  const daily = { automation: { omes: { enabled: true, frequency: 'daily', publishTimeIst: '11:00' } } };
+  assert.equal(isChannelDueForSchedule(daily, current, now), true);
+
+  const alternate = {
+    automation: {
+      omes: { enabled: true, frequency: 'alternate', publishTimeIst: '11:00', lastOmesRunAt: '2026-11-16T05:30:00.000Z' }
+    }
+  };
+  assert.equal(isOmesDueForSchedule(alternate, current, now), true);
+  assert.equal(isOmesDueForSchedule({
+    ...alternate,
+    automation: { omes: { ...alternate.automation.omes, lastOmesRunAt: '2026-11-16T10:30:00.000Z' } }
+  }, current, now), false);
+  assert.equal(isOmesDueForSchedule({
+    ...daily,
+    automation: { omes: { ...daily.automation.omes, lastOmesRunAt: now } }
+  }, current, now), false);
+});
+
 test('keeps a queued channel eligible after the trigger window if its schedule is unchanged', () => {
   const scheduledProfile = {
     autoPublishEnabled: true,
@@ -56,6 +78,10 @@ test('keeps a queued channel eligible after the trigger window if its schedule i
   assert.equal(isScheduledChannelStillEligible({
     ...scheduledProfile,
     lastAutoPublishedDateIst: '2026-11-18'
+  }, scheduledProfile, '2026-11-18'), false);
+  assert.equal(isScheduledChannelStillEligible({
+    ...scheduledProfile,
+    automation: { omes: { enabled: true } }
   }, scheduledProfile, '2026-11-18'), false);
 });
 
@@ -116,6 +142,51 @@ test('records automatic publication dates using only the matching channel ID', a
   assert.deepEqual(update.changes.$set, {
     'automation.lastPublishedDateIST': '2026-11-18',
     lastAutoPublishedDateIst: '2026-11-18'
+  });
+});
+
+test('routes due OMES channels to optimization instead of native video generation', async (t) => {
+  const originalFind = ChannelProfile.find;
+  const channelId = `UC${'m'.repeat(22)}`;
+  let optimized = 0;
+  let generated = 0;
+  ChannelProfile.find = () => ({
+    lean: async () => [{
+      channelId,
+      autoPublishEnabled: true,
+      automation: {
+        privacyStatus: 'private',
+        omes: { enabled: true, frequency: 'daily', publishTimeIst: '11:00', lastOmesRunAt: null }
+      }
+    }]
+  });
+  t.after(() => { ChannelProfile.find = originalFind; });
+
+  const result = await runScheduledTrigger({
+    now: new Date('2026-11-18T05:30:00.000Z'),
+    publish: async () => { generated += 1; },
+    publishOmes: async (requestedChannelId) => {
+      optimized += 1;
+      assert.equal(requestedChannelId, channelId);
+      return { videoId: 'manual-upload', title: 'Optimized metadata' };
+    }
+  });
+
+  assert.equal(optimized, 1);
+  assert.equal(generated, 0);
+  assert.equal(result.published, true);
+});
+
+test('manual native publish refuses channels with OMES enabled', async (t) => {
+  const originalFindOne = ChannelProfile.findOne;
+  ChannelProfile.findOne = () => ({
+    lean: async () => ({ channelId: 'UCchannel', automation: { omes: { enabled: true } } })
+  });
+  t.after(() => { ChannelProfile.findOne = originalFindOne; });
+
+  await assert.rejects(publishNow('UCchannel'), {
+    message: /OMES is enabled/,
+    status: 409
   });
 });
 

@@ -3,7 +3,14 @@ import YouTubeCredential from '../models/YouTubeCredential.js';
 import ChannelProfile from '../models/ChannelProfile.js';
 import BrainMemory from '../models/BrainMemory.js';
 import VideoLog from '../models/VideoLog.js';
+import OmesAuditLog from '../models/OmesAuditLog.js';
+import AutomationLock from '../models/AutomationLock.js';
 import { decryptToken, encryptToken, signOAuthState } from './cryptoService.js';
+import { generateOmesMetadata } from './metadataOptimizer.js';
+import { pruneChannelLogs } from './logCleanupService.js';
+
+const YOUTUBE_EDIT_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
+const OMES_LOCK_TTL_MS = 15 * 60 * 1000;
 
 function createOAuthClient() {
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI } = process.env;
@@ -12,8 +19,9 @@ function createOAuthClient() {
 }
 
 function scopes() {
-  return (process.env.YOUTUBE_SCOPES || 'https://www.googleapis.com/auth/youtube.upload,https://www.googleapis.com/auth/youtube.readonly,https://www.googleapis.com/auth/yt-analytics.readonly')
-    .split(',').map((scope) => scope.trim()).filter(Boolean);
+  const configured = process.env.YOUTUBE_SCOPES ||
+    'https://www.googleapis.com/auth/youtube.upload,https://www.googleapis.com/auth/youtube.readonly,https://www.googleapis.com/auth/yt-analytics.readonly';
+  return [...new Set([...configured.split(',').map((scope) => scope.trim()).filter(Boolean), YOUTUBE_EDIT_SCOPE])];
 }
 
 async function ensureChannelDocuments(channelId, channelTitle) {
@@ -83,9 +91,15 @@ export async function connectYouTubeAccount(code) {
   }));
 }
 
-export async function getChannelAuth(channelId) {
+export async function getChannelAuth(channelId, requiredScope = '') {
   const credential = await YouTubeCredential.findOne({ channelId }).lean();
   if (!credential) throw new Error(`YouTube channel ${channelId} is not connected.`);
+  if (requiredScope && !credential.scopes?.includes(requiredScope) &&
+      !credential.scopes?.includes('https://www.googleapis.com/auth/youtube')) {
+    const error = new Error('YouTube video editing permission is missing. Reconnect this channel and approve the updated YouTube permissions.');
+    error.status = 403;
+    throw error;
+  }
   const oauth2 = createOAuthClient();
   oauth2.setCredentials({ refresh_token: decryptToken(credential) });
   return oauth2;
@@ -256,6 +270,205 @@ export async function fetchRecentVideoAnalytics(channelId, limit = 30) {
       watchTimeMinutes: analytics.watchTimeMinutes || 0
     };
   });
+}
+
+export async function getChannelVideosHistory(channelId, maxResults = 25, dependencies = {}) {
+  const limit = Math.min(Math.max(Math.trunc(Number(maxResults) || 25), 1), 50);
+  const getAuth = dependencies.getAuth || getChannelAuth;
+  const makeYouTube = dependencies.makeYouTube || ((auth) => google.youtube({ version: 'v3', auth }));
+  const auth = await getAuth(channelId, YOUTUBE_EDIT_SCOPE);
+  const youtube = makeYouTube(auth);
+  const channelResponse = await youtube.channels.list({
+    part: ['contentDetails'],
+    id: [channelId],
+    maxResults: 1
+  });
+  const uploadsPlaylistId = channelResponse.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+  if (!uploadsPlaylistId) return [];
+
+  const playlistResponse = await youtube.playlistItems.list({
+    part: ['contentDetails', 'snippet'],
+    playlistId: uploadsPlaylistId,
+    maxResults: limit
+  });
+  const videoIds = (playlistResponse.data.items || [])
+    .map((item) => item.contentDetails?.videoId || item.snippet?.resourceId?.videoId)
+    .filter(Boolean);
+  if (!videoIds.length) return [];
+
+  const videoResponse = await youtube.videos.list({
+    part: ['snippet', 'status', 'statistics'],
+    id: videoIds
+  });
+  const videosById = new Map((videoResponse.data.items || []).map((video) => [video.id, video]));
+  return videoIds.map((videoId) => {
+    const video = videosById.get(videoId);
+    if (!video) return null;
+    return {
+      videoId,
+      title: video.snippet?.title || '',
+      description: video.snippet?.description || '',
+      tags: video.snippet?.tags || [],
+      categoryId: video.snippet?.categoryId || '',
+      defaultLanguage: video.snippet?.defaultLanguage,
+      defaultAudioLanguage: video.snippet?.defaultAudioLanguage,
+      publishedAt: video.snippet?.publishedAt || '',
+      privacyStatus: video.status?.privacyStatus || 'private',
+      selfDeclaredMadeForKids: video.status?.selfDeclaredMadeForKids ?? video.status?.madeForKids,
+      embeddable: video.status?.embeddable,
+      license: video.status?.license,
+      publicStatsViewable: video.status?.publicStatsViewable,
+      views: Number(video.statistics?.viewCount || 0),
+      likes: Number(video.statistics?.likeCount || 0)
+    };
+  }).filter(Boolean);
+}
+
+export function hasCompletePublicMetadata(video) {
+  return Boolean(video &&
+    String(video.title || '').trim() &&
+    String(video.description || '').trim() &&
+    Array.isArray(video.tags) && video.tags.length > 0 &&
+    video.privacyStatus === 'public');
+}
+
+export async function updateChannelVideoMetadata(channelId, video, metadata, dependencies = {}) {
+  const getAuth = dependencies.getAuth || getChannelAuth;
+  const makeYouTube = dependencies.makeYouTube || ((auth) => google.youtube({ version: 'v3', auth }));
+  const auth = await getAuth(channelId, YOUTUBE_EDIT_SCOPE);
+  const youtube = makeYouTube(auth);
+  const status = { privacyStatus: 'public' };
+  for (const field of ['selfDeclaredMadeForKids', 'embeddable', 'license', 'publicStatsViewable']) {
+    if (video[field] !== undefined) status[field] = video[field];
+  }
+  await youtube.videos.update({
+    part: ['snippet', 'status'],
+    requestBody: {
+      id: video.videoId,
+      snippet: {
+        title: metadata.title,
+        description: metadata.description,
+        tags: metadata.tags,
+        categoryId: video.categoryId || '22',
+        ...(video.defaultLanguage ? { defaultLanguage: video.defaultLanguage } : {}),
+        ...(video.defaultAudioLanguage ? { defaultAudioLanguage: video.defaultAudioLanguage } : {})
+      },
+      status
+    }
+  });
+}
+
+async function acquireOmesLock(channelId) {
+  const now = new Date();
+  const lockKey = `OMES_${channelId}`;
+  try {
+    const lock = await AutomationLock.findOneAndUpdate(
+      { lockKey, expiresAt: { $lte: now } },
+      { $set: { ownerChannelId: channelId, expiresAt: new Date(now.getTime() + OMES_LOCK_TTL_MS) } },
+      { upsert: true, new: true, runValidators: true }
+    );
+    return Boolean(lock && lock.ownerChannelId === channelId);
+  } catch (error) {
+    if (error.code === 11000) return false;
+    throw error;
+  }
+}
+
+async function releaseOmesLock(channelId) {
+  await AutomationLock.deleteOne({ lockKey: `OMES_${channelId}`, ownerChannelId: channelId });
+}
+
+export async function optimizeAndPublishLatestVideo(channelId, overrides = {}) {
+  const dependencies = {
+    findProfile: async () => ChannelProfile.findOne({ channelId }).lean(),
+    fetchHistory: getChannelVideosHistory,
+    generateMetadata: generateOmesMetadata,
+    updateVideo: updateChannelVideoMetadata,
+    acquireLock: acquireOmesLock,
+    releaseLock: releaseOmesLock,
+    saveProfile: async (runAt, videoId) => ChannelProfile.findOneAndUpdate(
+      { channelId },
+      { $set: {
+        'automation.omes.lastOmesRunAt': runAt,
+        'automation.omes.lastOptimizedVideoId': videoId
+      } },
+      { new: true, runValidators: true }
+    ),
+    saveAudit: (record) => OmesAuditLog.create(record),
+    saveVideoLog: (video, metadata) => VideoLog.findOneAndUpdate(
+      { channelId, videoId: video.videoId },
+      {
+        $set: {
+          title: metadata.title,
+          tags: metadata.tags,
+          privacyStatus: 'public',
+          views: video.views,
+          likes: video.likes,
+          publishedAt: video.publishedAt ? new Date(video.publishedAt) : new Date()
+        },
+        $setOnInsert: { hook: '', script: '', visualMediaIds: [] }
+      },
+      { upsert: true, new: true, runValidators: true }
+    ),
+    pruneLogs: () => pruneChannelLogs(channelId),
+    ...overrides
+  };
+  const profile = await dependencies.findProfile(channelId);
+  if (!profile) {
+    const error = new Error(`Channel profile not found for ${channelId}.`);
+    error.status = 404;
+    throw error;
+  }
+  if (!await dependencies.acquireLock(channelId)) {
+    return { skipped: true, reason: 'An OMES optimization is already running for this channel.' };
+  }
+
+  try {
+    const history = await dependencies.fetchHistory(channelId, 25);
+    const latestVideo = history[0];
+    if (!latestVideo) {
+      await dependencies.saveProfile(new Date(), profile.automation?.omes?.lastOptimizedVideoId || null);
+      return { skipped: true, reason: 'No uploaded YouTube videos were found for this channel.' };
+    }
+    if (profile.automation?.omes?.lastOptimizedVideoId === latestVideo.videoId &&
+        hasCompletePublicMetadata(latestVideo)) {
+      await dependencies.saveProfile(new Date(), latestVideo.videoId);
+      return {
+        skipped: true,
+        reason: 'The latest video is already optimized and public.',
+        videoId: latestVideo.videoId,
+        title: latestVideo.title
+      };
+    }
+
+    const metadata = await dependencies.generateMetadata(latestVideo, history, profile);
+    await dependencies.updateVideo(channelId, latestVideo, metadata);
+    const runAt = new Date();
+    await dependencies.saveAudit({
+      channelId,
+      videoId: latestVideo.videoId,
+      beforeTitle: latestVideo.title,
+      afterTitle: metadata.title,
+      beforeTagCount: latestVideo.tags?.length || 0,
+      afterTagCount: metadata.tags.length,
+      privacyBefore: latestVideo.privacyStatus || '',
+      privacyAfter: 'public',
+      optimizedAt: runAt
+    });
+    await dependencies.saveProfile(runAt, latestVideo.videoId);
+    await dependencies.saveVideoLog(latestVideo, metadata);
+    await dependencies.pruneLogs();
+    return {
+      skipped: false,
+      videoId: latestVideo.videoId,
+      beforeTitle: latestVideo.title,
+      title: metadata.title,
+      privacyStatus: 'public',
+      optimizedAt: runAt
+    };
+  } finally {
+    await dependencies.releaseLock(channelId);
+  }
 }
 
 export function buildShortUploadRequest(metadata, privacyStatus) {

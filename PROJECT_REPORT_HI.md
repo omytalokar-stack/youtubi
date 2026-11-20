@@ -78,12 +78,13 @@ Yeh selected channel ke niche, language aur tone ke context mein Gemini chat hai
 - YouTube channels connect/list karna
 - PWA install state aur iOS Safari instructions
 - Har channel ka daily auto-upload toggle/time (IST)
+- OMES mode toggle, frequency/time, manual run aur upload/optimization history
 - Upload privacy aur webhook schedule instructions
 
 ## 4. YouTube account connect karne ka flow
 
 1. Frontend backend ke `/api/youtube/auth-url` se Google authorization URL mangta hai.
-2. Backend YouTube read-only, upload aur Analytics read-only OAuth scopes ke saath Google consent flow shuru karta hai.
+2. Backend YouTube read-only, upload, Analytics read-only aur `youtube.force-ssl` scopes ke saath Google consent flow shuru karta hai. Existing channels ko video editing se pehle updated scope ke liye reconnect/consent dena hota hai.
 3. Google redirect ke baad `/api/youtube/oauth2callback` OAuth state signature aur expiry check karta hai.
 4. Backend refresh token ko AES-256-GCM se encrypt karke MongoDB mein rakhta hai; token ka IV aur auth tag bhi record ke saath save hota hai.
 5. Account ke channel(s) discover hote hain. Har channel ke liye profile aur brain-memory record ensure kiye jate hain.
@@ -130,6 +131,8 @@ Iska matlab “winner” apne channel ke recent sample ke andar relative label h
 ## 7. Scheduled automation
 
 - Har channel ka IST publish time aur auto-upload enable state profile mein rehta hai.
+- OMES ON hone par scheduler us channel ke liye Short generation/upload ko bypass karke latest completed manual upload ko optimize aur Public karta hai. OMES ka apna IST time hai; `daily` roz run karta hai, `alternate` pichhle run se kam-se-kam 44 ghante baad.
+- Settings ka manual OMES run wahi secret-protected operation chalata hai, lekin user ko pehle public visibility change confirm karni hoti hai. Private history access aur `videos.update` ke liye `youtube.force-ssl` OAuth scope zaroori hai. Existing Google consent ko reconnect karke refresh karna pad sakta hai; YouTube Studio drafts uploads playlist se hamesha accessible nahi hote.
 - `cron-job.org` ya kisi scheduler ko daily `/api/automation/trigger` par GET/POST bhejna hota hai. `CRON_SECRET` set ho to `x-cron-secret` header dena chahiye.
 - Trigger turant `202 Accepted` deta hai; due channels background mein process hote hain.
 - Schedule ke baad 25 minute tak ka window accept hota hai; aaj publish ho chuka channel dobara auto-publish nahi hota.
@@ -152,6 +155,9 @@ Sab routes `/api` ke neeche hain:
 | `POST /analytics/:channelId/audit` | Secret-protected analytics audit |
 | `GET/PUT /profile/:channelId` | Channel profile read/update |
 | `PATCH /channels/:channelId/schedule` | Auto-publish schedule update |
+| `PUT /channels/:channelId/omes` | Secret-protected OMES configuration update |
+| `POST /channels/:channelId/omes/run` | Secret-protected manual optimize/publish |
+| `GET /channels/:channelId/omes/history` | Secret-protected recent uploads and OMES audit history |
 | `GET/PATCH /brain/:channelId` | Brain memory read/self-correction toggle |
 | `POST /brain/tactic`, `POST /brain/mistake` | Manual brain notes |
 | `POST /automation/publish/:channelId` | Background manual publish start |
@@ -169,15 +175,17 @@ API ka MongoDB connection unavailable ho to `/health` 503 deta hai aur business 
 - **`ChannelProfile`:** niche/language/tone/visual prefix, metadata rules, privacy, IST schedule aur synced channel totals.
 - **`BrainMemory`:** self-correction switch, winning tactics, mistake rules, next strategy aur performance scorecard.
 - **`VideoLog`:** uploaded/recent video topic, generated hook/script/tags, analytics metrics aur per-video used stock media IDs.
+- **`OmesAuditLog`:** OMES metadata title/tag-count/visibility before-after audit.
 - **`AutomationLock`:** global render-worker owner aur lock expiry.
 
-Channel-related records `channelId` se keyed hote hain. MongoDB persistent hona chahiye; production ephemeral storage par bharosa nahi karna chahiye.
+Channel-related records `channelId` se keyed hote hain. Cleanup sirf MongoDB ke log documents par kaam karta hai: 45 din se purane records, har channel ke 50 se zyada history/audit records aur dono log collections mila kar 300 se zyada documents prune hote hain. YouTube videos kabhi delete nahi hote. MongoDB persistent hona chahiye; production ephemeral storage par bharosa nahi karna chahiye.
 
 ## 10. Security aur data handling ke design points
 
 - YouTube refresh tokens database mein AES-256-GCM encrypted hote hain; `TOKEN_ENCRYPTION_KEY` 32-byte key hona chahiye.
 - OAuth state HMAC-SHA256 signed hota hai, random nonce rakhta hai aur 10 minute ke baad expire hota hai.
 - Scheduler/audit triggers `CRON_SECRET` check karte hain. Secret ke bina yeh protected endpoints 503 dete hain.
+- OMES settings/history/manual-run endpoints bhi wahi secret header maangte hain; frontend secret ko sirf page memory mein rakhta hai, local storage ya build bundle mein nahi.
 - CORS configured browser origins ko allow karta hai, lekin **CORS authentication nahi hota**.
 - Script, brain memory aur channel profile per-channel read hote hain; logs/temp job directories channel/job identifiers se alag rakhe jate hain.
 - Secret values ko `.env` files ya frontend bundle mein commit nahi karna; report mein sirf variable names diye gaye hain.

@@ -1,13 +1,24 @@
 import { Router } from 'express';
 import ChannelProfile from '../models/ChannelProfile.js';
 import BrainMemory from '../models/BrainMemory.js';
-import { channelCredentialExists } from '../services/youtubeService.js';
+import OmesAuditLog from '../models/OmesAuditLog.js';
+import {
+  channelCredentialExists, getChannelVideosHistory, optimizeAndPublishLatestVideo
+} from '../services/youtubeService.js';
 
 const router = Router();
 const languages = ['Hindi', 'Hinglish', 'Marathi', 'English'];
 const privacyStatuses = ['private', 'unlisted', 'public'];
 const channelIdPattern = /^UC[A-Za-z0-9_-]{22}$/;
 const publishTimePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const omesFrequencies = ['daily', 'alternate'];
+
+function requireOmesSecret(req, res, next) {
+  const supplied = req.get('x-cron-secret');
+  if (!process.env.CRON_SECRET) return res.status(503).json({ error: 'CRON_SECRET is not configured.' });
+  if (supplied !== process.env.CRON_SECRET) return res.status(401).json({ error: 'Invalid OMES access secret.' });
+  next();
+}
 
 function getDefaultPublishTimeIst(profile) {
   const { scheduleHourIST: hour, scheduleMinuteIST: minute } = profile.automation || {};
@@ -55,6 +66,60 @@ router.patch('/channels/:channelId/schedule', async (req, res, next) => {
     ).lean();
     if (!profile) return res.status(404).json({ error: 'Channel profile not found.' });
     res.json({ profile: withScheduleDefaults(profile) });
+  } catch (error) { next(error); }
+});
+
+router.put('/channels/:channelId/omes', requireOmesSecret, async (req, res, next) => {
+  try {
+    const { channelId } = req.params;
+    if (!channelIdPattern.test(channelId)) return res.status(400).json({ error: 'Invalid YouTube channel ID.' });
+    const input = req.body;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return res.status(400).json({ error: 'OMES settings are required.' });
+    }
+    const keys = Object.keys(input);
+    if (!keys.length || keys.some((key) => !['enabled', 'frequency', 'publishTimeIst'].includes(key))) {
+      return res.status(400).json({ error: 'Only enabled, frequency and publishTimeIst can be updated.' });
+    }
+    if (input.enabled !== undefined && typeof input.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be a boolean.' });
+    }
+    if (input.frequency !== undefined && !omesFrequencies.includes(input.frequency)) {
+      return res.status(400).json({ error: 'frequency must be daily or alternate.' });
+    }
+    if (input.publishTimeIst !== undefined &&
+        (typeof input.publishTimeIst !== 'string' || !publishTimePattern.test(input.publishTimeIst))) {
+      return res.status(400).json({ error: 'publishTimeIst must use HH:MM 24-hour format.' });
+    }
+
+    const update = {};
+    for (const key of keys) update[`automation.omes.${key}`] = input[key];
+    const profile = await ChannelProfile.findOneAndUpdate(
+      { channelId }, { $set: update }, { new: true, runValidators: true }
+    ).lean();
+    if (!profile) return res.status(404).json({ error: 'Channel profile not found.' });
+    res.json({ profile: withScheduleDefaults(profile) });
+  } catch (error) { next(error); }
+});
+
+router.post('/channels/:channelId/omes/run', requireOmesSecret, async (req, res, next) => {
+  try {
+    const { channelId } = req.params;
+    if (!channelIdPattern.test(channelId)) return res.status(400).json({ error: 'Invalid YouTube channel ID.' });
+    res.json({ result: await optimizeAndPublishLatestVideo(channelId) });
+  } catch (error) { next(error); }
+});
+
+router.get('/channels/:channelId/omes/history', requireOmesSecret, async (req, res, next) => {
+  try {
+    const { channelId } = req.params;
+    if (!channelIdPattern.test(channelId)) return res.status(400).json({ error: 'Invalid YouTube channel ID.' });
+    if (!await ChannelProfile.exists({ channelId })) return res.status(404).json({ error: 'Channel profile not found.' });
+    const [videos, auditLogs] = await Promise.all([
+      getChannelVideosHistory(channelId, 25),
+      OmesAuditLog.find({ channelId }).sort({ optimizedAt: -1 }).limit(50).lean()
+    ]);
+    res.json({ videos, auditLogs });
   } catch (error) { next(error); }
 });
 

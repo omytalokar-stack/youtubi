@@ -6,7 +6,8 @@ import { generateShort } from './geminiService.js';
 import { generateSceneAssets } from './visualService.js';
 import { generateVoiceover } from './ttsService.js';
 import { createJobDirectory, renderShort } from './renderService.js';
-import { getChannelStats, uploadShort } from './youtubeService.js';
+import { getChannelStats, optimizeAndPublishLatestVideo, uploadShort } from './youtubeService.js';
+import { pruneChannelLogs } from './logCleanupService.js';
 
 const LOCK_KEY = 'GLOBAL_RENDER_WORKER';
 export const RENDER_LOCK_TTL_MS = 15 * 60 * 1000;
@@ -78,6 +79,9 @@ export function getTodayIST() {
 }
 
 function getChannelPublishTimeIst(profile) {
+  if (profile.automation?.omes?.enabled && typeof profile.automation.omes.publishTimeIst === 'string') {
+    return profile.automation.omes.publishTimeIst;
+  }
   if (typeof profile.publishTimeIst === 'string') return profile.publishTimeIst;
   const { scheduleHourIST: hour, scheduleMinuteIST: minute } = profile.automation || {};
   if (Number.isInteger(hour) && hour >= 0 && hour <= 23 &&
@@ -87,7 +91,25 @@ function getChannelPublishTimeIst(profile) {
   return DEFAULT_PUBLISH_TIME_IST;
 }
 
-export function isChannelDueForSchedule(profile, current = getIstSchedule()) {
+export function isOmesDueForSchedule(profile, current = getIstSchedule(), now = new Date()) {
+  const omes = profile.automation?.omes;
+  if (omes?.enabled !== true || !PUBLISH_TIME_PATTERN.test(omes.publishTimeIst || '')) return false;
+  const [publishHour, publishMinute] = omes.publishTimeIst.split(':').map(Number);
+  const [currentHour, currentMinute] = current.timeIst.split(':').map(Number);
+  const minutesAfterSchedule = (currentHour * 60 + currentMinute) - (publishHour * 60 + publishMinute);
+  if (minutesAfterSchedule < 0 || minutesAfterSchedule > SCHEDULE_WINDOW_MINUTES) return false;
+  if (!omes.lastOmesRunAt) return true;
+
+  const lastRun = new Date(omes.lastOmesRunAt);
+  if (Number.isNaN(lastRun.getTime()) || getIstSchedule(lastRun).todayIst === current.todayIst) return false;
+  if (omes.frequency === 'alternate') {
+    return now.getTime() - lastRun.getTime() >= 44 * 60 * 60 * 1000;
+  }
+  return true;
+}
+
+export function isChannelDueForSchedule(profile, current = getIstSchedule(), now = new Date()) {
+  if (profile.automation?.omes?.enabled === true) return isOmesDueForSchedule(profile, current, now);
   if (profile.autoPublishEnabled !== true ||
       profile.lastAutoPublishedDateIst === current.todayIst) return false;
   const publishTimeIst = getChannelPublishTimeIst(profile);
@@ -100,6 +122,7 @@ export function isChannelDueForSchedule(profile, current = getIstSchedule()) {
 
 export function isScheduledChannelStillEligible(currentProfile, scheduledProfile, scheduledDateIst) {
   return Boolean(currentProfile &&
+    currentProfile.automation?.omes?.enabled !== true &&
     (currentProfile.autoPublishEnabled ?? true) &&
     getChannelPublishTimeIst(currentProfile) === getChannelPublishTimeIst(scheduledProfile) &&
     currentProfile.lastAutoPublishedDateIst !== scheduledDateIst);
@@ -208,8 +231,14 @@ async function publishChannel(channelId, profile, {
     await VideoLog.create({
       channelId, videoId, topic: generated.topic, title: generated.title, hook: generated.hook,
       script: generated.script, tags: generated.tags, visualMediaIds: render.visualMediaIds,
+      privacyStatus: profile.automation.privacyStatus,
       publishedAt: new Date()
     });
+    try {
+      await pruneChannelLogs(channelId);
+    } catch (error) {
+      console.warn(`Log cleanup failed after publishing for ${channelId}:`, error.message);
+    }
     if (trackPublication) await recordPublishedDate(channelId, getTodayIST(), autoPublished);
     try {
       await getChannelStats(channelId);
@@ -241,11 +270,16 @@ async function publishChannel(channelId, profile, {
 export async function publishNow(channelId) {
   const profile = await ChannelProfile.findOne({ channelId }).lean();
   if (!profile) throw new Error(`Channel profile not found for ${channelId}.`);
+  if (profile.automation?.omes?.enabled === true) {
+    const error = new Error('OMES is enabled for this channel; native Short generation and upload are disabled.');
+    error.status = 409;
+    throw error;
+  }
   if (!profile.automation?.privacyStatus) throw new Error(`Channel ${channelId} has no privacy setting.`);
   return publishChannel(channelId, profile, { trackPublication: true });
 }
 
-export async function runScheduledTrigger({ now = new Date(), publish } = {}) {
+export async function runScheduledTrigger({ now = new Date(), publish, publishOmes } = {}) {
   const current = getIstSchedule(now);
   const publishScheduled = publish || ((channelId, profile) =>
     publishChannel(channelId, profile, {
@@ -253,11 +287,12 @@ export async function runScheduledTrigger({ now = new Date(), publish } = {}) {
       autoPublished: true,
       scheduledDateIst: current.todayIst
     }));
+  const optimizeOmes = publishOmes || optimizeAndPublishLatestVideo;
   const profiles = await ChannelProfile.find({}).lean();
   const dueProfiles = profiles.map((profile) => ({
     ...profile,
     autoPublishEnabled: profile.autoPublishEnabled === undefined ? true : profile.autoPublishEnabled
-  })).filter((profile) => isChannelDueForSchedule(profile, current))
+  })).filter((profile) => isChannelDueForSchedule(profile, current, now))
     .sort((left, right) =>
       getChannelPublishTimeIst(left).localeCompare(getChannelPublishTimeIst(right)) ||
       left.channelId.localeCompare(right.channelId)
@@ -267,15 +302,18 @@ export async function runScheduledTrigger({ now = new Date(), publish } = {}) {
   const results = [];
   for (const profile of dueProfiles) {
     const { channelId } = profile;
+    const isOmes = profile.automation?.omes?.enabled === true;
     try {
-      const result = await publishScheduled(channelId, profile);
+      const result = isOmes
+        ? await optimizeOmes(channelId)
+        : await publishScheduled(channelId, profile);
       if (result.skipped) {
         results.push({ ...result, channelId, published: false });
         continue;
       }
       results.push({ ...result, channelId, published: true });
     } catch (error) {
-      console.error(`Scheduled publish failed for ${channelId}:`, error.message);
+      console.error(`Scheduled ${isOmes ? 'OMES optimization' : 'publish'} failed for ${channelId}:`, error.message);
       results.push({ channelId, published: false, error: error.message });
     }
   }

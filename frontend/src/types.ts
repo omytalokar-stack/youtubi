@@ -16,7 +16,35 @@ export type Profile = {
     scheduleMinuteIST: number;
     privacyStatus: 'private' | 'unlisted' | 'public';
     lastPublishedDateIST: string;
+    omes?: {
+      enabled: boolean;
+      frequency: 'daily' | 'alternate';
+      publishTimeIst: string;
+      lastOmesRunAt: string | null;
+      lastOptimizedVideoId: string | null;
+    };
   };
+};
+export type OmesVideoHistory = {
+  videoId: string;
+  title: string;
+  description: string;
+  tags: string[];
+  categoryId: string;
+  publishedAt: string;
+  privacyStatus: 'private' | 'unlisted' | 'public';
+  views: number;
+  likes: number;
+};
+export type OmesAuditLog = {
+  videoId: string;
+  beforeTitle: string;
+  afterTitle: string;
+  beforeTagCount: number;
+  afterTagCount: number;
+  privacyBefore: string;
+  privacyAfter: string;
+  optimizedAt: string;
 };
 export type Brain = {
   channelId: string;
