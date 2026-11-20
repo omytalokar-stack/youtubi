@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { Activity, BrainCircuit, ChevronDown, Clapperboard, LayoutDashboard, MessageSquareText, Moon, Plus, Settings2, Sun } from 'lucide-react';
+import { BrainCircuit, ChevronDown, Clapperboard, LayoutDashboard, MessageSquareText, Moon, Plus, Settings2, Sparkles, Sun } from 'lucide-react';
 import type { Channel } from '../types';
 
 export type TabId = 'analytics' | 'dna' | 'brain' | 'studio' | 'settings';
 
 const tabs: { id: TabId; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'analytics', label: 'Analytics', icon: LayoutDashboard },
-  { id: 'dna', label: 'Channel DNA', icon: Activity },
+  { id: 'dna', label: 'Channel DNA', icon: Sparkles },
   { id: 'brain', label: 'Agent Brain', icon: BrainCircuit },
   { id: 'studio', label: 'Gemini Studio', icon: MessageSquareText },
   { id: 'settings', label: 'Settings', icon: Settings2 }
