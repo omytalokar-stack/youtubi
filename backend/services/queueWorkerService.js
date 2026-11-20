@@ -19,13 +19,19 @@ let processRenderActive = false;
 const pipelineStatuses = new Map();
 const pipelineListeners = new Map();
 
-export function updatePipelineStatus(channelId, stage, { lastVideoTitle, failedAtStage } = {}) {
+export function updatePipelineStatus(channelId, stage, {
+  lastVideoTitle, failedAtStage, reason, runStatus, runSource, runMode
+} = {}) {
   const previous = pipelineStatuses.get(channelId);
   const status = {
     channelId,
     stage,
     lastVideoTitle: lastVideoTitle ?? previous?.lastVideoTitle ?? '',
     timestamp: new Date().toISOString(),
+    reason: reason ?? previous?.reason ?? '',
+    runStatus: runStatus ?? previous?.runStatus ?? '',
+    runSource: runSource ?? previous?.runSource ?? '',
+    runMode: runMode ?? previous?.runMode ?? '',
     ...(failedAtStage ? { failedAtStage } : {})
   };
   pipelineStatuses.set(channelId, status);
@@ -42,6 +48,28 @@ export function updatePipelineStatus(channelId, stage, { lastVideoTitle, failedA
 export async function getPipelineStatus(channelId) {
   const current = pipelineStatuses.get(channelId);
   if (current) return current;
+  const profile = await ChannelProfile.findOne({ channelId })
+    .select('automation.lastRun').lean();
+  const lastRun = profile?.automation?.lastRun;
+  if (lastRun && lastRun.status !== 'idle') {
+    const stage = lastRun.status === 'failed'
+      ? 'failed'
+      : lastRun.status === 'completed' ? 'completed'
+        : lastRun.status === 'running' ? lastRun.stage
+          : 'idle';
+    const timestamp = lastRun.finishedAt || lastRun.startedAt;
+    return {
+      channelId,
+      stage,
+      lastVideoTitle: lastRun.title || '',
+      timestamp: timestamp ? new Date(timestamp).toISOString() : new Date().toISOString(),
+      reason: lastRun.reason || '',
+      runStatus: lastRun.status,
+      runSource: lastRun.source || '',
+      runMode: lastRun.mode || '',
+      ...(lastRun.failedAtStage ? { failedAtStage: lastRun.failedAtStage } : {})
+    };
+  }
   const lastVideo = await VideoLog.findOne({ channelId })
     .sort({ publishedAt: -1 }).select('title publishedAt').lean();
   return {
@@ -118,6 +146,77 @@ export function isChannelDueForSchedule(profile, current = getIstSchedule(), now
   const [currentHour, currentMinute] = current.timeIst.split(':').map(Number);
   const minutesAfterSchedule = (currentHour * 60 + currentMinute) - (publishHour * 60 + publishMinute);
   return minutesAfterSchedule >= 0 && minutesAfterSchedule <= SCHEDULE_WINDOW_MINUTES;
+}
+
+function canResumeScheduledRun(profile) {
+  const run = profile.automation?.lastRun;
+  if (!run || !['queued', 'running'].includes(run.status) || run.source !== 'scheduled') return false;
+  if (run.mode === 'omes') {
+    return profile.automation?.omes?.enabled === true &&
+      getChannelPublishTimeIst(profile) === run.scheduledTimeIst;
+  }
+  return profile.autoPublishEnabled === true &&
+    profile.automation?.omes?.enabled !== true &&
+    getChannelPublishTimeIst(profile) === run.scheduledTimeIst &&
+    profile.lastAutoPublishedDateIst !== run.scheduledDateIst;
+}
+
+async function saveScheduledRun(channelId, run) {
+  const update = {};
+  for (const field of [
+    'status', 'source', 'mode', 'stage', 'failedAtStage', 'reason', 'title',
+    'videoId', 'scheduledDateIst', 'scheduledTimeIst', 'startedAt', 'finishedAt'
+  ]) {
+    update[`automation.lastRun.${field}`] = run[field] ?? (field === 'finishedAt' ? null : '');
+  }
+  const result = await ChannelProfile.updateOne({ channelId }, { $set: update });
+  if (result.matchedCount === 0) throw new Error(`Channel profile not found while saving scheduled status for ${channelId}.`);
+}
+
+export async function prepareScheduledRun({ now = new Date(), recordRun = saveScheduledRun } = {}) {
+  const current = getIstSchedule(now);
+  const profiles = await ChannelProfile.find({}).lean();
+  const dueProfiles = profiles.map((profile) => ({
+    ...profile,
+    autoPublishEnabled: profile.autoPublishEnabled === undefined ? true : profile.autoPublishEnabled
+  })).filter((profile) =>
+    isChannelDueForSchedule(profile, current, now) || canResumeScheduledRun(profile)
+  ).sort((left, right) =>
+    getChannelPublishTimeIst(left).localeCompare(getChannelPublishTimeIst(right)) ||
+    left.channelId.localeCompare(right.channelId)
+  );
+  const queuedProfiles = [];
+  for (const profile of dueProfiles) {
+    const previous = profile.automation?.lastRun;
+    const resuming = canResumeScheduledRun(profile);
+    const run = {
+      status: 'queued',
+      source: 'scheduled',
+      mode: profile.automation?.omes?.enabled === true ? 'omes' : 'auto-upload',
+      stage: 'queued',
+      failedAtStage: '',
+      reason: resuming ? 'Retrying an interrupted scheduled run.' : '',
+      title: resuming ? previous.title || '' : '',
+      videoId: resuming ? previous.videoId || '' : '',
+      scheduledDateIst: resuming ? previous.scheduledDateIst : current.todayIst,
+      scheduledTimeIst: getChannelPublishTimeIst(profile),
+      startedAt: resuming ? previous.startedAt || now : now,
+      finishedAt: null
+    };
+    await recordRun(profile.channelId, run);
+    updatePipelineStatus(profile.channelId, 'queued', {
+      lastVideoTitle: run.title,
+      reason: run.reason,
+      runStatus: 'queued',
+      runSource: 'scheduled',
+      runMode: run.mode
+    });
+    queuedProfiles.push({
+      ...profile,
+      automation: { ...profile.automation, lastRun: run }
+    });
+  }
+  return { current, dueProfiles: queuedProfiles };
 }
 
 export function isScheduledChannelStillEligible(currentProfile, scheduledProfile, scheduledDateIst) {
@@ -200,7 +299,12 @@ async function publishChannel(channelId, profile, {
       }
       profile = currentProfile;
     }
-    updatePipelineStatus(channelId, stage);
+    updatePipelineStatus(channelId, stage, {
+      reason: '',
+      runStatus: 'running',
+      runSource: autoPublished ? 'scheduled' : 'manual',
+      runMode: 'auto-upload'
+    });
     jobDir = createJobDirectory(channelId);
     const generated = await generateShort(channelId, {
       onWriting: () => {
@@ -246,11 +350,19 @@ async function publishChannel(channelId, profile, {
       console.warn(`YouTube statistics refresh failed after publishing for ${channelId}:`, error.message);
     }
     stage = 'completed';
-    updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
+    updatePipelineStatus(channelId, stage, {
+      lastVideoTitle: generated.title,
+      runStatus: 'completed',
+      reason: ''
+    });
     return { channelId, videoId, title: generated.title };
   } catch (error) {
     updatePipelineStatus(channelId, 'failed', {
-      failedAtStage: stage
+      failedAtStage: stage,
+      reason: error.message,
+      runStatus: 'failed',
+      runSource: autoPublished ? 'scheduled' : 'manual',
+      runMode: 'auto-upload'
     });
     throw error;
   } finally {
@@ -279,8 +391,19 @@ export async function publishNow(channelId) {
   return publishChannel(channelId, profile, { trackPublication: true });
 }
 
-export async function runScheduledTrigger({ now = new Date(), publish, publishOmes } = {}) {
-  const current = getIstSchedule(now);
+async function saveRunStatusSafely(recordRun, channelId, run, phase) {
+  try {
+    await recordRun(channelId, run);
+  } catch (error) {
+    console.error(`Could not persist scheduled ${phase} status for ${channelId}:`, error.message);
+  }
+}
+
+export async function runScheduledTrigger({
+  now = new Date(), publish, publishOmes, recordRun = saveScheduledRun, prepared
+} = {}) {
+  const schedule = prepared || await prepareScheduledRun({ now, recordRun });
+  const { current, dueProfiles } = schedule;
   const publishScheduled = publish || ((channelId, profile) =>
     publishChannel(channelId, profile, {
       trackPublication: true,
@@ -288,31 +411,90 @@ export async function runScheduledTrigger({ now = new Date(), publish, publishOm
       scheduledDateIst: current.todayIst
     }));
   const optimizeOmes = publishOmes || optimizeAndPublishLatestVideo;
-  const profiles = await ChannelProfile.find({}).lean();
-  const dueProfiles = profiles.map((profile) => ({
-    ...profile,
-    autoPublishEnabled: profile.autoPublishEnabled === undefined ? true : profile.autoPublishEnabled
-  })).filter((profile) => isChannelDueForSchedule(profile, current, now))
-    .sort((left, right) =>
-      getChannelPublishTimeIst(left).localeCompare(getChannelPublishTimeIst(right)) ||
-      left.channelId.localeCompare(right.channelId)
-    );
   if (!dueProfiles.length) return { published: false, results: [], reason: 'No channel is due today.' };
 
   const results = [];
   for (const profile of dueProfiles) {
     const { channelId } = profile;
     const isOmes = profile.automation?.omes?.enabled === true;
+    const runMode = isOmes ? 'omes' : 'auto-upload';
+    const queuedRun = profile.automation?.lastRun || {};
+    const runningRun = {
+      ...queuedRun,
+      status: 'running',
+      source: 'scheduled',
+      mode: runMode,
+      stage: isOmes ? 'optimizing' : 'dna',
+      failedAtStage: '',
+      reason: '',
+      startedAt: queuedRun.startedAt || now,
+      finishedAt: null
+    };
+    await saveRunStatusSafely(recordRun, channelId, runningRun, 'running');
+    updatePipelineStatus(channelId, runningRun.stage, {
+      lastVideoTitle: runningRun.title || '',
+      reason: '',
+      runStatus: 'running',
+      runSource: 'scheduled',
+      runMode
+    });
     try {
       const result = isOmes
         ? await optimizeOmes(channelId)
         : await publishScheduled(channelId, profile);
+      const finishedAt = new Date();
       if (result.skipped) {
+        const reason = result.reason || 'The scheduled channel run was skipped.';
+        const skippedRun = {
+          ...runningRun,
+          status: 'skipped',
+          stage: 'idle',
+          reason,
+          finishedAt
+        };
+        updatePipelineStatus(channelId, 'idle', {
+          reason, runStatus: 'skipped', runSource: 'scheduled', runMode
+        });
+        await saveRunStatusSafely(recordRun, channelId, skippedRun, 'skipped');
         results.push({ ...result, channelId, published: false });
         continue;
       }
+      const title = result.title || result.metadata?.title || '';
+      const videoId = result.videoId || '';
+      const completedRun = {
+        ...runningRun,
+        status: 'completed',
+        stage: 'completed',
+        reason: '',
+        title,
+        videoId,
+        finishedAt
+      };
+      updatePipelineStatus(channelId, 'completed', {
+        lastVideoTitle: title,
+        reason: '',
+        runStatus: 'completed',
+        runSource: 'scheduled',
+        runMode
+      });
+      await saveRunStatusSafely(recordRun, channelId, completedRun, 'completed');
       results.push({ ...result, channelId, published: true });
     } catch (error) {
+      const failedAtStage = pipelineStatuses.get(channelId)?.failedAtStage ||
+        (isOmes ? 'optimizing' : pipelineStatuses.get(channelId)?.stage || 'dna');
+      const failedRun = {
+        ...runningRun,
+        status: 'failed',
+        stage: 'failed',
+        failedAtStage,
+        reason: error.message,
+        finishedAt: new Date()
+      };
+      updatePipelineStatus(channelId, 'failed', {
+        failedAtStage, reason: error.message, runStatus: 'failed',
+        runSource: 'scheduled', runMode
+      });
+      await saveRunStatusSafely(recordRun, channelId, failedRun, 'failed');
       console.error(`Scheduled ${isOmes ? 'OMES optimization' : 'publish'} failed for ${channelId}:`, error.message);
       results.push({ channelId, published: false, error: error.message });
     }

@@ -15,7 +15,9 @@ export function AgentBrain() {
   const [result, setResult] = useState('');
   const [jobStatus, setJobStatus] = useState<PipelineStatus | null>(null);
   const activeStages: PipelineStage[] = ['dna', 'writing', 'rendering', 'uploading'];
-  const jobIsActive = Boolean(jobStatus && activeStages.includes(jobStatus.stage));
+  const jobIsActive = Boolean(jobStatus && (
+    activeStages.includes(jobStatus.stage) || jobStatus.stage === 'optimizing'
+  ));
 
   useEffect(() => {
     setJobStatus(null);
@@ -90,12 +92,20 @@ export function AgentBrain() {
     ? activeStages.indexOf(jobStatus.stage)
     : jobStatus?.stage === 'completed' ? activeStages.length : failedIndex;
   const stageMessage = jobStatus?.stage === 'completed'
-    ? `Published: ${jobStatus.lastVideoTitle || 'Short complete'}`
+    ? jobStatus.runMode === 'omes'
+      ? `OMES published: ${jobStatus.lastVideoTitle || 'Latest video optimized'}`
+      : `Published: ${jobStatus.lastVideoTitle || 'Short complete'}`
     : jobStatus?.stage === 'failed'
-      ? `Failed during ${jobStatus.failedAtStage || 'the pipeline'}`
-      : jobIsActive
-        ? `In progress · ${jobStatus?.lastVideoTitle || 'Preparing this channel’s Short'}`
-        : 'Idle · waiting for a manual or scheduled run';
+      ? `Failed during ${jobStatus.failedAtStage || 'the pipeline'} · ${jobStatus.reason || 'Check backend logs.'}`
+      : jobStatus?.runStatus === 'skipped'
+        ? `Skipped · ${jobStatus.reason || 'No eligible upload.'}`
+        : jobStatus?.stage === 'optimizing'
+          ? 'OMES · optimizing the latest channel upload'
+          : jobStatus?.runStatus === 'queued'
+            ? `Queued · ${jobStatus.reason || 'Waiting for the scheduled worker.'}`
+            : jobIsActive
+              ? `In progress · ${jobStatus?.lastVideoTitle || 'Preparing this channel’s Short'}`
+              : 'Idle · waiting for a manual or scheduled run';
 
   return <div className="page-stack">
     <div className="page-heading-row"><div><div className="eyebrow"><span className="eyebrow-line" /> DIMAG · AGENT BRAIN</div><h1>Think sharper, every Short<span className="heading-period">.</span></h1><p className="page-subtitle">A channel-specific creative loop that remembers what works—and what to avoid.</p></div><div className="brain-status"><span className="online-dot" /> BRAIN ONLINE</div></div>

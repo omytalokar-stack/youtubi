@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import ChannelProfile from '../models/ChannelProfile.js';
+import YouTubeCredential from '../models/YouTubeCredential.js';
 import VideoLog from '../models/VideoLog.js';
 import {
-  buildShortUploadRequest, getChannelVideosHistory, hasCompletePublicMetadata,
+  buildShortUploadRequest, getChannelAuth, getChannelVideosHistory, hasCompletePublicMetadata,
   optimizeAndPublishLatestVideo, persistChannelStats, updateChannelVideoMetadata
 } from './youtubeService.js';
 
@@ -51,6 +52,41 @@ test('keeps the saved visibility unchanged in every YouTube upload request', () 
     assert.deepEqual(request.part, ['snippet', 'status']);
   }
   assert.throws(() => buildShortUploadRequest(metadata, 'PUBLIC'), /Unsupported YouTube privacy status/);
+});
+
+test('reports per-channel missing OAuth scopes and incomplete refresh-token records', async (t) => {
+  const originalFindOne = YouTubeCredential.findOne;
+  t.after(() => { YouTubeCredential.findOne = originalFindOne; });
+
+  YouTubeCredential.findOne = () => ({
+    lean: async () => ({ channelId: 'UCupload', scopes: ['https://www.googleapis.com/auth/youtube.readonly'] })
+  });
+  await assert.rejects(getChannelAuth('UCupload', 'https://www.googleapis.com/auth/youtube.upload'), {
+    status: 403,
+    message: /video upload permission is missing/
+  });
+
+  YouTubeCredential.findOne = () => ({
+    lean: async () => ({ channelId: 'UComes', scopes: ['https://www.googleapis.com/auth/youtube.upload'] })
+  });
+  await assert.rejects(getChannelAuth('UComes', 'https://www.googleapis.com/auth/youtube.force-ssl'), {
+    status: 403,
+    message: /video editing permission is missing/
+  });
+
+  YouTubeCredential.findOne = () => ({
+    lean: async () => ({
+      channelId: 'UCmissing-token',
+      scopes: ['https://www.googleapis.com/auth/youtube.upload'],
+      refreshToken: '',
+      iv: '',
+      authTag: ''
+    })
+  });
+  await assert.rejects(getChannelAuth('UCmissing-token', 'https://www.googleapis.com/auth/youtube.upload'), {
+    status: 401,
+    message: /refresh token is incomplete/
+  });
 });
 
 test('loads uploads playlist video metadata including private visibility and audience declarations', async () => {

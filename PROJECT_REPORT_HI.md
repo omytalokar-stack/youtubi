@@ -133,9 +133,9 @@ Iska matlab “winner” apne channel ke recent sample ke andar relative label h
 - Har channel ka IST publish time aur auto-upload enable state profile mein rehta hai.
 - OMES ON hone par scheduler us channel ke liye Short generation/upload ko bypass karke latest completed manual upload ko optimize aur Public karta hai. OMES ka apna IST time hai; `daily` roz run karta hai, `alternate` pichhle run se kam-se-kam 44 ghante baad.
 - Settings ka manual OMES run wahi secret-protected operation chalata hai, lekin user ko pehle public visibility change confirm karni hoti hai. Private history access aur `videos.update` ke liye `youtube.force-ssl` OAuth scope zaroori hai. Existing Google consent ko reconnect karke refresh karna pad sakta hai; YouTube Studio drafts uploads playlist se hamesha accessible nahi hote.
-- `cron-job.org` ya kisi scheduler ko daily `/api/automation/trigger` par GET/POST bhejna hota hai. `CRON_SECRET` set ho to `x-cron-secret` header dena chahiye.
-- Trigger turant `202 Accepted` deta hai; due channels background mein process hote hain.
-- Schedule ke baad 25 minute tak ka window accept hota hai; aaj publish ho chuka channel dobara auto-publish nahi hota.
+- `cron-job.org` ya kisi scheduler ko har alag channel IST publish-time par daily `/api/automation/trigger` GET/POST bhejna hota hai. `CRON_SECRET` set ho to sahi `x-cron-secret` header dena zaroori hai.
+- `202 Accepted` se pehle due channel queue MongoDB mein save hoti hai; phir due channels ek ke baad ek process hote hain. Render restart se queued/running job ruk jaaye to agla trigger usse original 25-minute schedule window ke baad bhi recover kar sakta hai.
+- Schedule ke baad 25 minute tak naya run start hota hai; aaj publish ho chuka channel dobara auto-publish nahi hota. Har channel ka last run status, failure stage, skip reason aur error `/api/automation/status/:channelId` mein restart ke baad bhi milta hai.
 - Due channels ek ke baad ek process hote hain; MongoDB global render lock ek samay par ek channel ko render/upload karne deta hai.
 - Lock ka TTL 15 minute hai, har minute heartbeat renew hoti hai. Lock lose hone par active render abort karne ki koshish hoti hai.
 - Frontend schedule save karna scheduler ko khud se start nahi karta; external cron trigger configure rehna zaroori hai.

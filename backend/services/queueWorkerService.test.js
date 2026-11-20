@@ -5,7 +5,7 @@ import ChannelProfile from '../models/ChannelProfile.js';
 import {
   acquireRenderLock, getIstSchedule, isChannelDueForSchedule, isOmesDueForSchedule, renewRenderLock,
   getPipelineStatus, isScheduledChannelStillEligible, RENDER_LOCK_HEARTBEAT_MS,
-  RENDER_LOCK_TTL_MS, recordPublishedDate, publishNow,
+  RENDER_LOCK_TTL_MS, recordPublishedDate, publishNow, prepareScheduledRun,
   runScheduledTrigger, subscribeToPipelineStatus, updatePipelineStatus,
   SCHEDULE_WINDOW_MINUTES
 } from './queueWorkerService.js';
@@ -24,6 +24,17 @@ test('matches channel schedules only at or within the 25-minute IST window', () 
   assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '16:26' }), false);
   assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '15:59' }), false);
   assert.equal(isChannelDueForSchedule({ ...profile, autoPublishEnabled: undefined }, current), false);
+});
+
+test('formats IST schedules in 24-hour time across midnight', () => {
+  assert.deepEqual(getIstSchedule(new Date('2026-11-18T18:20:00.000Z')), {
+    todayIst: '2026-11-18',
+    timeIst: '23:50'
+  });
+  assert.deepEqual(getIstSchedule(new Date('2026-11-18T18:35:00.000Z')), {
+    todayIst: '2026-11-19',
+    timeIst: '00:05'
+  });
 });
 
 test('does not reschedule a channel already published on the current IST date', () => {
@@ -108,6 +119,7 @@ test('runs due channels sequentially in isolated channelId scopes', async (t) =>
 
   const result = await runScheduledTrigger({
     now: new Date('2026-11-18T10:30:00.000Z'),
+    recordRun: async () => {},
     publish: async (channelId, profile) => {
       assert.equal(profile.channelId, channelId);
       executionOrder.push(`start:${channelId}`);
@@ -124,6 +136,40 @@ test('runs due channels sequentially in isolated channelId scopes', async (t) =>
     `start:${channelA}`, `done:${channelA}`
   ]);
   assert.deepEqual(result.results.map(({ channelId }) => channelId), [channelB, legacyChannel, channelA]);
+});
+
+test('recovers persisted scheduled runs even after their original IST window has passed', async (t) => {
+  const originalFind = ChannelProfile.find;
+  const channelId = `UC${'q'.repeat(22)}`;
+  const interruptedRun = {
+    status: 'running',
+    source: 'scheduled',
+    mode: 'auto-upload',
+    scheduledDateIst: '2026-11-17',
+    scheduledTimeIst: '16:00',
+    startedAt: new Date('2026-11-17T10:30:00.000Z')
+  };
+  ChannelProfile.find = () => ({
+    lean: async () => [{
+      channelId,
+      autoPublishEnabled: true,
+      publishTimeIst: '16:00',
+      lastAutoPublishedDateIst: '',
+      automation: { omes: { enabled: false }, lastRun: interruptedRun }
+    }]
+  });
+  t.after(() => { ChannelProfile.find = originalFind; });
+  const persisted = [];
+
+  const prepared = await prepareScheduledRun({
+    now: new Date('2026-11-18T18:00:00.000Z'),
+    recordRun: async (id, run) => persisted.push({ id, run })
+  });
+
+  assert.deepEqual(prepared.dueProfiles.map((profile) => profile.channelId), [channelId]);
+  assert.equal(persisted[0].run.status, 'queued');
+  assert.equal(persisted[0].run.scheduledDateIst, '2026-11-17');
+  assert.match(persisted[0].run.reason, /interrupted/);
 });
 
 test('records automatic publication dates using only the matching channel ID', async (t) => {
@@ -164,6 +210,7 @@ test('routes due OMES channels to optimization instead of native video generatio
 
   const result = await runScheduledTrigger({
     now: new Date('2026-11-18T05:30:00.000Z'),
+    recordRun: async () => {},
     publish: async () => { generated += 1; },
     publishOmes: async (requestedChannelId) => {
       optimized += 1;
@@ -215,6 +262,60 @@ test('global render lock rejects a concurrent manual or scheduled job', async (t
   assert.equal(locks.includes(false), true);
   assert.ok(RENDER_LOCK_TTL_MS >= 15 * 60 * 1000);
   assert.ok(RENDER_LOCK_HEARTBEAT_MS < RENDER_LOCK_TTL_MS);
+});
+
+test('recovers expired render locks and keeps a MongoDB TTL index as a cleanup backstop', async (t) => {
+  const originalFindOneAndUpdate = AutomationLock.findOneAndUpdate;
+  let observedFilter;
+  AutomationLock.findOneAndUpdate = async (filter, update, options) => {
+    observedFilter = filter;
+    assert.ok(update.$set.expiresAt.getTime() > Date.now());
+    assert.equal(options.upsert, true);
+    return { ownerChannelId: 'recovered-channel' };
+  };
+  t.after(() => { AutomationLock.findOneAndUpdate = originalFindOneAndUpdate; });
+
+  assert.equal(await acquireRenderLock('recovered-channel'), true);
+  assert.ok(observedFilter.expiresAt.$lte instanceof Date);
+  assert.ok(AutomationLock.schema.indexes().some(([keys, options]) =>
+    keys.expiresAt === 1 && options.expireAfterSeconds === 0
+  ));
+});
+
+test('returns the last scheduled failure and reason after process-local state is lost', async (t) => {
+  const originalFindOne = ChannelProfile.findOne;
+  const channelId = `UC${'w'.repeat(22)}`;
+  ChannelProfile.findOne = () => ({
+    select: (selection) => {
+      assert.equal(selection, 'automation.lastRun');
+      return {
+        lean: async () => ({
+          automation: {
+            lastRun: {
+              status: 'failed',
+              source: 'scheduled',
+              mode: 'auto-upload',
+              stage: 'failed',
+              failedAtStage: 'uploading',
+              reason: 'YouTube quota exceeded.',
+              title: 'Scheduled Short',
+              startedAt: new Date('2026-11-18T10:00:00.000Z'),
+              finishedAt: new Date('2026-11-18T10:02:00.000Z')
+            }
+          }
+        })
+      };
+    }
+  });
+  t.after(() => { ChannelProfile.findOne = originalFindOne; });
+
+  const status = await getPipelineStatus(channelId);
+
+  assert.equal(status.stage, 'failed');
+  assert.equal(status.reason, 'YouTube quota exceeded.');
+  assert.equal(status.failedAtStage, 'uploading');
+  assert.equal(status.lastVideoTitle, 'Scheduled Short');
+  assert.equal(status.runStatus, 'failed');
 });
 
 test('aborts the active render when its heartbeat cannot renew the global lock', async (t) => {

@@ -9,6 +9,7 @@ import { decryptToken, encryptToken, signOAuthState } from './cryptoService.js';
 import { generateOmesMetadata } from './metadataOptimizer.js';
 import { pruneChannelLogs } from './logCleanupService.js';
 
+const YOUTUBE_UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload';
 const YOUTUBE_EDIT_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
 const OMES_LOCK_TTL_MS = 15 * 60 * 1000;
 
@@ -94,14 +95,42 @@ export async function connectYouTubeAccount(code) {
 export async function getChannelAuth(channelId, requiredScope = '') {
   const credential = await YouTubeCredential.findOne({ channelId }).lean();
   if (!credential) throw new Error(`YouTube channel ${channelId} is not connected.`);
-  if (requiredScope && !credential.scopes?.includes(requiredScope) &&
-      !credential.scopes?.includes('https://www.googleapis.com/auth/youtube')) {
-    const error = new Error('YouTube video editing permission is missing. Reconnect this channel and approve the updated YouTube permissions.');
+  const hasFullYoutubeScope = credential.scopes?.includes('https://www.googleapis.com/auth/youtube');
+  const hasUploadScope = credential.scopes?.includes(YOUTUBE_UPLOAD_SCOPE) ||
+    credential.scopes?.includes(YOUTUBE_EDIT_SCOPE);
+  const hasEditScope = credential.scopes?.includes(YOUTUBE_EDIT_SCOPE);
+  const hasRequiredScope = requiredScope === YOUTUBE_UPLOAD_SCOPE
+    ? hasUploadScope || hasFullYoutubeScope
+    : requiredScope === YOUTUBE_EDIT_SCOPE
+      ? hasEditScope || hasFullYoutubeScope
+      : credential.scopes?.includes(requiredScope) || hasFullYoutubeScope;
+  if (requiredScope && !hasRequiredScope) {
+    const permission = requiredScope === YOUTUBE_UPLOAD_SCOPE ? 'video upload' : 'private/unlisted video editing';
+    const error = new Error(`YouTube ${permission} permission is missing for channel ${channelId}. Reconnect this channel and approve the required YouTube permissions.`);
     error.status = 403;
     throw error;
   }
+  if (!credential.refreshToken || !credential.iv || !credential.authTag) {
+    const error = new Error(`Saved YouTube refresh token is incomplete for channel ${channelId}. Reconnect this channel.`);
+    error.status = 401;
+    throw error;
+  }
   const oauth2 = createOAuthClient();
-  oauth2.setCredentials({ refresh_token: decryptToken(credential) });
+  let refreshToken;
+  try {
+    refreshToken = decryptToken(credential);
+  } catch (cause) {
+    if (/TOKEN_ENCRYPTION_KEY/.test(cause.message)) throw cause;
+    const error = new Error(`Saved YouTube refresh token could not be decrypted for channel ${channelId}. Reconnect this channel.`, { cause });
+    error.status = 401;
+    throw error;
+  }
+  if (!refreshToken) {
+    const error = new Error(`Saved YouTube refresh token is empty for channel ${channelId}. Reconnect this channel.`);
+    error.status = 401;
+    throw error;
+  }
+  oauth2.setCredentials({ refresh_token: refreshToken });
   return oauth2;
 }
 
@@ -490,7 +519,7 @@ export function buildShortUploadRequest(metadata, privacyStatus) {
 }
 
 export async function uploadShort(channelId, filePath, metadata, privacyStatus) {
-  const auth = await getChannelAuth(channelId);
+  const auth = await getChannelAuth(channelId, YOUTUBE_UPLOAD_SCOPE);
   const youtube = google.youtube({ version: 'v3', auth });
   const response = await youtube.videos.insert({
     ...buildShortUploadRequest(metadata, privacyStatus),

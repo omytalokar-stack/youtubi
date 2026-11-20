@@ -19,6 +19,7 @@ test('new channel profiles default to an enabled 16:00 IST schedule', () => {
   assert.equal(profile.automation.omes.publishTimeIst, '11:00');
   assert.equal(profile.automation.omes.lastOmesRunAt, null);
   assert.equal(profile.automation.omes.lastOptimizedVideoId, null);
+  assert.equal(profile.automation.lastRun.status, 'idle');
   assert.equal(profile.validateSync(), undefined);
 });
 

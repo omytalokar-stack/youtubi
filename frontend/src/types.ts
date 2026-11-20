@@ -85,11 +85,15 @@ export type Stats = {
   kpis: { views: number; subscribers: number; watchTimeMinutes: number; videos: number };
   recentVideos: Video[];
 };
-export type PipelineStage = 'idle' | 'dna' | 'writing' | 'rendering' | 'uploading' | 'completed' | 'failed';
+export type PipelineStage = 'idle' | 'queued' | 'optimizing' | 'dna' | 'writing' | 'rendering' | 'uploading' | 'completed' | 'failed';
 export type PipelineStatus = {
   channelId: string;
   stage: PipelineStage;
   lastVideoTitle: string;
   timestamp: string;
+  reason?: string;
+  runStatus?: 'idle' | 'queued' | 'running' | 'completed' | 'skipped' | 'failed';
+  runSource?: 'scheduled' | 'manual' | '';
+  runMode?: 'auto-upload' | 'omes' | '';
   failedAtStage?: Exclude<PipelineStage, 'idle' | 'completed' | 'failed'>;
 };

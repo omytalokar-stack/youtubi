@@ -41,6 +41,20 @@ const ChannelProfileSchema = new mongoose.Schema({
       publishTimeIst: { type: String, default: '11:00', match: /^(?:[01]\d|2[0-3]):[0-5]\d$/ },
       lastOmesRunAt: { type: Date, default: null },
       lastOptimizedVideoId: { type: String, default: null }
+    },
+    lastRun: {
+      status: { type: String, enum: ['idle', 'queued', 'running', 'completed', 'skipped', 'failed'], default: 'idle' },
+      source: { type: String, enum: ['scheduled', 'manual'], default: 'scheduled' },
+      mode: { type: String, enum: ['auto-upload', 'omes'], default: 'auto-upload' },
+      stage: { type: String, default: 'idle' },
+      failedAtStage: { type: String, default: '' },
+      reason: { type: String, default: '' },
+      title: { type: String, default: '' },
+      videoId: { type: String, default: '' },
+      scheduledDateIst: { type: String, default: '' },
+      scheduledTimeIst: { type: String, default: '' },
+      startedAt: { type: Date, default: null },
+      finishedAt: { type: Date, default: null }
     }
   }
 }, { timestamps: true });
