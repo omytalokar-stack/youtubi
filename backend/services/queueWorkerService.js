@@ -98,6 +98,13 @@ export function isChannelDueForSchedule(profile, current = getIstSchedule()) {
   return minutesAfterSchedule >= 0 && minutesAfterSchedule <= SCHEDULE_WINDOW_MINUTES;
 }
 
+export function isScheduledChannelStillEligible(currentProfile, scheduledProfile, scheduledDateIst) {
+  return Boolean(currentProfile &&
+    (currentProfile.autoPublishEnabled ?? true) &&
+    getChannelPublishTimeIst(currentProfile) === getChannelPublishTimeIst(scheduledProfile) &&
+    currentProfile.lastAutoPublishedDateIst !== scheduledDateIst);
+}
+
 export async function acquireRenderLock(channelId) {
   const now = new Date();
   try {
@@ -143,7 +150,9 @@ export async function recordPublishedDate(channelId, todayIst, autoPublished = f
   await ChannelProfile.updateOne({ channelId }, { $set: fields });
 }
 
-async function publishChannel(channelId, profile, { trackPublication = false, autoPublished = false } = {}) {
+async function publishChannel(channelId, profile, {
+  trackPublication = false, autoPublished = false, scheduledDateIst
+} = {}) {
   if (processRenderActive) return { skipped: true, reason: 'Another channel is rendering or uploading.' };
   if (!await acquireRenderLock(channelId)) return { skipped: true, reason: 'Another channel is rendering or uploading.' };
   processRenderActive = true;
@@ -163,14 +172,7 @@ async function publishChannel(channelId, profile, { trackPublication = false, au
   try {
     if (autoPublished) {
       const currentProfile = await ChannelProfile.findOne({ channelId }).lean();
-      const currentSchedule = getIstSchedule();
-      if (!currentProfile ||
-          !isChannelDueForSchedule({
-            ...currentProfile,
-            autoPublishEnabled: currentProfile.autoPublishEnabled === undefined
-              ? true
-              : currentProfile.autoPublishEnabled
-          }, currentSchedule)) {
+      if (!isScheduledChannelStillEligible(currentProfile, profile, scheduledDateIst)) {
         return { skipped: true, reason: 'Channel is no longer due for an automatic upload.' };
       }
       profile = currentProfile;
@@ -241,7 +243,11 @@ export async function publishNow(channelId) {
 export async function runScheduledTrigger({ now = new Date(), publish } = {}) {
   const current = getIstSchedule(now);
   const publishScheduled = publish || ((channelId, profile) =>
-    publishChannel(channelId, profile, { trackPublication: true, autoPublished: true }));
+    publishChannel(channelId, profile, {
+      trackPublication: true,
+      autoPublished: true,
+      scheduledDateIst: current.todayIst
+    }));
   const profiles = await ChannelProfile.find({}).lean();
   const dueProfiles = profiles.map((profile) => ({
     ...profile,

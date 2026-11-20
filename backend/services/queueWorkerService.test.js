@@ -4,7 +4,8 @@ import AutomationLock from '../models/AutomationLock.js';
 import ChannelProfile from '../models/ChannelProfile.js';
 import {
   acquireRenderLock, getIstSchedule, isChannelDueForSchedule, renewRenderLock,
-  getPipelineStatus, RENDER_LOCK_HEARTBEAT_MS, RENDER_LOCK_TTL_MS, recordPublishedDate,
+  getPipelineStatus, isScheduledChannelStillEligible, RENDER_LOCK_HEARTBEAT_MS,
+  RENDER_LOCK_TTL_MS, recordPublishedDate,
   runScheduledTrigger, subscribeToPipelineStatus, updatePipelineStatus,
   SCHEDULE_WINDOW_MINUTES
 } from './queueWorkerService.js';
@@ -32,6 +33,30 @@ test('does not reschedule a channel already published on the current IST date', 
     publishTimeIst: '16:00',
     lastAutoPublishedDateIst: current.todayIst
   }, current), false);
+});
+
+test('keeps a queued channel eligible after the trigger window if its schedule is unchanged', () => {
+  const scheduledProfile = {
+    autoPublishEnabled: true,
+    publishTimeIst: '16:00',
+    lastAutoPublishedDateIst: ''
+  };
+  assert.equal(isScheduledChannelStillEligible({
+    ...scheduledProfile,
+    lastAutoPublishedDateIst: ''
+  }, scheduledProfile, '2026-11-18'), true);
+  assert.equal(isScheduledChannelStillEligible({
+    ...scheduledProfile,
+    autoPublishEnabled: false
+  }, scheduledProfile, '2026-11-18'), false);
+  assert.equal(isScheduledChannelStillEligible({
+    ...scheduledProfile,
+    publishTimeIst: '17:00'
+  }, scheduledProfile, '2026-11-18'), false);
+  assert.equal(isScheduledChannelStillEligible({
+    ...scheduledProfile,
+    lastAutoPublishedDateIst: '2026-11-18'
+  }, scheduledProfile, '2026-11-18'), false);
 });
 
 test('runs due channels sequentially in isolated channelId scopes', async (t) => {
