@@ -26,8 +26,32 @@ test('builds centered 3-5 word captions with a bundled Devanagari-capable font',
   assert.match(filter, /fontfile=/);
   assert.match(filter, /text_shaping=1/);
   assert.match(filter, /fontsize=48/);
+  assert.match(filter, /borderw=2:bordercolor=black@0\.9/);
   assert.match(filter, /box=1:boxcolor=black@0\.55:boxborderw=18/);
   assert.match(filter, /shadowcolor=black@0\.75/);
+});
+
+test('keeps the opening hook visible for the first two seconds', () => {
+  const [hook] = buildCaptionEvents(
+    Array.from({ length: 8 }, () => 'one two three four five six seven'),
+    'Watch the unexpected turn'
+  );
+  assert.deepEqual(hook, {
+    text: 'Watch the unexpected turn',
+    start: 0,
+    end: 2,
+    position: 'top'
+  });
+});
+
+test('places the final spoken beat in the last three seconds', () => {
+  const events = buildCaptionEvents(
+    Array.from({ length: 8 }, (_, index) => `scene ${index} reveals one more hidden detail`),
+    'Watch the unexpected turn'
+  );
+  const finalBeat = events.filter((event) => event.position === 'center').slice(-2);
+  assert.ok(finalBeat[0].start >= 20.74 - 3);
+  assert.equal(finalBeat.at(-1).end, 20.74);
 });
 
 test('balances long subtitle beats so the final caption does not collapse to one or two words', () => {

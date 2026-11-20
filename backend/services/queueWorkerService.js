@@ -189,21 +189,26 @@ async function publishChannel(channelId, profile, {
     updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
     stage = 'rendering';
     updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
-    const sceneAssets = generateSceneAssets(generated.scenePrompts);
+    const sceneAssets = generateSceneAssets(generated.scenePrompts, generated.visualQueries);
+    const recentVideoMedia = await VideoLog.find({ channelId })
+      .sort({ publishedAt: -1 }).limit(30).select('visualMediaIds').lean();
+    const excludedMediaIds = new Set(recentVideoMedia.flatMap((video) => video.visualMediaIds || []));
     ensureLock();
     const voice = await generateVoiceover(generated.script, profile.language, jobDir, renderController.signal);
     ensureLock();
-    const file = await renderShort({
+    const render = await renderShort({
       sceneAssets, audioPath: voice, hook: generated.hook,
-      subtitleBeats: generated.subtitleBeats, jobDir, signal: renderController.signal
+      subtitleBeats: generated.subtitleBeats, jobDir, signal: renderController.signal,
+      excludedMediaIds
     });
     ensureLock();
     stage = 'uploading';
     updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
-    const videoId = await uploadShort(channelId, file, generated, profile.automation.privacyStatus);
+    const videoId = await uploadShort(channelId, render.outputPath, generated, profile.automation.privacyStatus);
     await VideoLog.create({
-      channelId, videoId, title: generated.title, hook: generated.hook,
-      script: generated.script, tags: generated.tags, publishedAt: new Date()
+      channelId, videoId, topic: generated.topic, title: generated.title, hook: generated.hook,
+      script: generated.script, tags: generated.tags, visualMediaIds: render.visualMediaIds,
+      publishedAt: new Date()
     });
     if (trackPublication) await recordPublishedDate(channelId, getTodayIST(), autoPublished);
     try {

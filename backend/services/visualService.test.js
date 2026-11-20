@@ -17,6 +17,11 @@ test('creates eight local procedural scenes without a visual provider', () => {
 test('rejects missing or empty procedural scene prompts', () => {
   assert.throws(() => generateSceneAssets(Array(7).fill('A scene.')), /Exactly 8 scene prompts/);
   assert.throws(() => generateSceneAssets([...Array(7).fill('A scene.'), ' ']), /non-empty prompt/);
+  assert.throws(() => generateSceneAssets(Array(8).fill('A scene.'), ['only one query']), /exactly 8 entries/);
+  assert.throws(() => generateSceneAssets(
+    Array(8).fill('A scene.'),
+    Array(8).fill('repeated visual query')
+  ), /distinct visual query/);
 });
 
 test('does not contact stock providers unless an API key is configured', async () => {
@@ -83,6 +88,53 @@ test('retrieves a vertical Pexels clip and writes it into the render job directo
     assert.equal(requests[0].init.headers.Authorization, 'test-pexels-key');
     assert.match(requests[0].url.searchParams.get('query'), /calm waves ocean mist/);
     assert.equal(requests[0].url.searchParams.get('orientation'), 'portrait');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(jobDir, { recursive: true, force: true });
+    if (previousPexelsKey === undefined) delete process.env.PEXELS_API_KEY;
+    else process.env.PEXELS_API_KEY = previousPexelsKey;
+    if (previousPixabayKey === undefined) delete process.env.PIXABAY_API_KEY;
+    else process.env.PIXABAY_API_KEY = previousPixabayKey;
+  }
+});
+
+test('uses sentence-specific searches and excludes repeated stock IDs within and across Shorts', async () => {
+  const previousPexelsKey = process.env.PEXELS_API_KEY;
+  const previousPixabayKey = process.env.PIXABAY_API_KEY;
+  const originalFetch = globalThis.fetch;
+  const jobDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dimag_unique_stock_test_'));
+  process.env.PEXELS_API_KEY = 'test-pexels-key';
+  delete process.env.PIXABAY_API_KEY;
+  const searches = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    if (url.hostname === 'api.pexels.com') {
+      searches.push(url.searchParams.get('query'));
+      const current = searches.length;
+      const files = ['shared-history', `scene-${current}`].map((id) => ({
+        file_type: 'video/mp4',
+        width: 720,
+        height: 1280,
+        link: `https://videos.pexels.com/video-files/${id}.mp4`
+      }));
+      return new Response(JSON.stringify({
+        videos: [{ id: current === 1 ? 'shared-history' : 'shared-history', video_files: [files[0]] },
+          { id: `scene-${current}`, video_files: [files[1]] }]
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(new Uint8Array([0, 1, 2, 3]), {
+      status: 200,
+      headers: { 'content-type': 'video/mp4', 'content-length': '4' }
+    });
+  };
+  try {
+    const queries = Array.from({ length: 8 }, (_, index) => `visual query ${index + 1}`);
+    const assets = generateSceneAssets(Array.from({ length: 8 }, (_, index) => `Sentence ${index + 1}.`), queries);
+    const resolved = await resolveStockSceneAssets(assets, jobDir, undefined, ['pexels:shared-history']);
+    assert.deepEqual(searches, queries);
+    assert.equal(resolved.filter((asset) => asset.type === 'video').length, 8);
+    assert.equal(new Set(resolved.map((asset) => asset.mediaId)).size, 8);
+    assert.ok(resolved.every((asset) => asset.mediaId !== 'pexels:shared-history'));
   } finally {
     globalThis.fetch = originalFetch;
     await fs.rm(jobDir, { recursive: true, force: true });

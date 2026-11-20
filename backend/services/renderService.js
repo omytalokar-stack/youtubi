@@ -76,7 +76,7 @@ export function buildCaptionEvents(beats, hook, duration = OUTPUT_DURATION) {
   if (!Number.isFinite(duration) || duration <= 0) throw new RangeError('Caption duration must be positive.');
   const events = [];
   const cleanHook = String(hook || '').replace(/\s+/g, ' ').trim();
-  if (cleanHook) events.push({ text: cleanHook, start: 0, end: Math.min(0.8, duration), position: 'top' });
+  if (cleanHook) events.push({ text: cleanHook, start: 0, end: Math.min(2, duration), position: 'top' });
   const beatDuration = duration / beats.length;
   beats.forEach((beat, beatIndex) => {
     const captions = groupCaptionWords(beat);
@@ -100,7 +100,7 @@ function escapeFilterPath(value) {
 
 export function buildCaptionFilter(event, fontPath, textFilePath) {
   const y = event.position === 'top' ? '150' : '(h-text_h)/2';
-  return `drawtext=fontfile='${escapeFilterPath(fontPath)}':textfile='${escapeFilterPath(textFilePath)}':expansion=none:text_shaping=1:fontcolor=white:fontsize=48:borderw=1.25:bordercolor=white:shadowcolor=black@0.75:shadowx=2:shadowy=2:box=1:boxcolor=black@0.55:boxborderw=18:x=(w-text_w)/2:y=${y}:enable='between(t,${event.start.toFixed(3)},${event.end.toFixed(3)})'`;
+  return `drawtext=fontfile='${escapeFilterPath(fontPath)}':textfile='${escapeFilterPath(textFilePath)}':expansion=none:text_shaping=1:fontcolor=white:fontsize=48:borderw=2:bordercolor=black@0.9:shadowcolor=black@0.75:shadowx=2:shadowy=2:box=1:boxcolor=black@0.55:boxborderw=18:x=(w-text_w)/2:y=${y}:enable='between(t,${event.start.toFixed(3)},${event.end.toFixed(3)})'`;
 }
 
 function encodeArgs(outputPath) {
@@ -269,7 +269,9 @@ function isWithinJobDirectory(jobDir, filePath) {
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats, jobDir, signal }) {
+export async function renderShort({
+  sceneAssets, audioPath, hook, subtitleBeats, jobDir, signal, excludedMediaIds = []
+}) {
   if (!Array.isArray(sceneAssets) || sceneAssets.length !== SCENE_COUNT) {
     throw new TypeError(`Exactly ${SCENE_COUNT} generated scenes are required.`);
   }
@@ -287,7 +289,7 @@ export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats,
       fs.writeFileSync(textPath, event.text, 'utf8');
       return buildCaptionFilter(event, fontPath, textPath);
     });
-    resolvedAssets = await resolveStockSceneAssets(sceneAssets, jobDir, signal);
+    resolvedAssets = await resolveStockSceneAssets(sceneAssets, jobDir, signal, excludedMediaIds);
     for (let index = 0; index < resolvedAssets.length; index += 1) {
       await renderScene(resolvedAssets[index], index, segmentPaths[index], signal);
     }
@@ -303,7 +305,12 @@ export async function renderShort({ sceneAssets, audioPath, hook, subtitleBeats,
       signal
     });
     rendered = true;
-    return outputPath;
+    return {
+      outputPath,
+      visualMediaIds: resolvedAssets
+        .filter((asset) => asset.type === 'video' && asset.mediaId)
+        .map((asset) => asset.mediaId)
+    };
   } finally {
     const cleanupPaths = [
       ...segmentPaths,

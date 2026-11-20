@@ -3,10 +3,12 @@ import mongoose from 'mongoose';
 const VideoLogSchema = new mongoose.Schema({
   channelId: { type: String, required: true, index: true },
   videoId: { type: String, required: true },
+  topic: { type: String, default: '' },
   title: { type: String, required: true },
   hook: { type: String, default: '' },
   script: { type: String, default: '' },
   tags: { type: [String], default: [] },
+  visualMediaIds: { type: [String], default: [] },
   views: { type: Number, default: 0 },
   impressions: { type: Number, default: 0 },
   ctr: { type: Number, default: 0 },

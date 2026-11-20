@@ -23,21 +23,35 @@ const PROMPT_STOP_WORDS = new Set([
   'scene', 'style', 'subject', 'visual', 'with', 'from', 'into', 'over', 'under'
 ]);
 
-export function generateSceneAssets(scenePrompts) {
+export function generateSceneAssets(scenePrompts, visualQueries = []) {
   if (!Array.isArray(scenePrompts) || scenePrompts.length !== PROCEDURAL_SCENE_COUNT) {
     throw new TypeError(`Exactly ${PROCEDURAL_SCENE_COUNT} scene prompts are required.`);
   }
   if (scenePrompts.some((prompt) => typeof prompt !== 'string' || !prompt.trim())) {
     throw new TypeError('Every procedural scene requires a non-empty prompt.');
   }
+  if (!Array.isArray(visualQueries) || (visualQueries.length && visualQueries.length !== PROCEDURAL_SCENE_COUNT)) {
+    throw new TypeError(`Visual queries must contain exactly ${PROCEDURAL_SCENE_COUNT} entries when provided.`);
+  }
+  if (visualQueries.some((query) => typeof query !== 'string' || !query.trim())) {
+    throw new TypeError('Every visual query must be a non-empty string.');
+  }
+  const normalizedQueries = visualQueries.map((query) =>
+    query.toLocaleLowerCase().replace(/[\p{P}\p{S}]/gu, ' ').trim().replace(/\s+/g, ' ')
+  );
+  if (new Set(normalizedQueries).size !== normalizedQueries.length) {
+    throw new TypeError('Every scene must have a distinct visual query.');
+  }
   return scenePrompts.map((prompt, index) => ({
     type: 'procedural',
     prompt: prompt.trim(),
+    visualQuery: visualQueries[index]?.trim() || '',
     index
   }));
 }
 
 function makeSearchQuery(asset, index) {
+  if (asset.visualQuery) return asset.visualQuery;
   const prompt = asset.prompt.toLowerCase();
   const promptTerms = prompt.match(/[a-z]{3,}/g) || [];
   const specificTerms = promptTerms.filter((word) => !PROMPT_STOP_WORDS.has(word)).slice(0, 2);
@@ -71,14 +85,17 @@ function allowedMediaUrl(rawUrl, provider) {
   return url;
 }
 
-function choosePortraitVideo(files, provider) {
+function choosePortraitVideo(files, provider, usedMedia = new Set()) {
   const eligible = files.filter((file) => {
     const width = Number(file.width);
     const height = Number(file.height);
+    const url = file.link || file.url;
+    const mediaId = `${provider}:${file.media_id || file.id || url}`;
     return (!file.file_type || file.file_type === 'video/mp4') &&
       width >= 480 && height >= 850 && width < height &&
       width <= 1080 && height <= 1920 &&
-      allowedMediaUrl(file.link || file.url, provider) &&
+      allowedMediaUrl(url, provider) &&
+      !usedMedia.has(mediaId) && !usedMedia.has(url) &&
       (!file.size || Number(file.size) <= MAX_STOCK_CLIP_BYTES);
   });
   eligible.sort((left, right) =>
@@ -87,14 +104,16 @@ function choosePortraitVideo(files, provider) {
   );
   const file = eligible[0];
   if (!file) return null;
+  const url = file.link || file.url;
   return {
-    url: file.link || file.url,
+    url,
     provider,
+    mediaId: `${provider}:${file.media_id || file.id || url}`,
     size: Number(file.size) || 0
   };
 }
 
-async function searchPexels(asset, index, apiKey, signal) {
+async function searchPexels(asset, index, apiKey, signal, usedMedia) {
   const url = new URL('https://api.pexels.com/videos/search');
   url.search = new URLSearchParams({
     query: makeSearchQuery(asset, index),
@@ -109,10 +128,12 @@ async function searchPexels(asset, index, apiKey, signal) {
   });
   if (!response.ok) throw new Error(`Pexels API returned HTTP ${response.status}.`);
   const payload = await response.json();
-  return choosePortraitVideo((payload.videos || []).flatMap((video) => video.video_files || []), 'pexels');
+  return choosePortraitVideo((payload.videos || []).flatMap((video) =>
+    (video.video_files || []).map((file) => ({ ...file, media_id: video.id }))
+  ), 'pexels', usedMedia);
 }
 
-async function searchPixabay(asset, index, apiKey, signal) {
+async function searchPixabay(asset, index, apiKey, signal, usedMedia) {
   const url = new URL('https://pixabay.com/api/videos/');
   url.search = new URLSearchParams({
     key: apiKey,
@@ -125,8 +146,11 @@ async function searchPixabay(asset, index, apiKey, signal) {
   if (!response.ok) throw new Error(`Pixabay API returned HTTP ${response.status}.`);
   const payload = await response.json();
   return choosePortraitVideo(
-    (payload.hits || []).flatMap((hit) => Object.values(hit.videos || {})),
-    'pixabay'
+    (payload.hits || []).flatMap((hit) =>
+      Object.values(hit.videos || {}).map((file) => ({ ...file, media_id: hit.id }))
+    ),
+    'pixabay',
+    usedMedia
   );
 }
 
@@ -163,15 +187,16 @@ async function downloadStockVideo(video, destination, signal) {
   }
 }
 
-export async function resolveStockSceneAssets(sceneAssets, jobDir, signal) {
+export async function resolveStockSceneAssets(sceneAssets, jobDir, signal, excludedMediaIds = []) {
+  const usedMedia = new Set(excludedMediaIds instanceof Set ? excludedMediaIds : excludedMediaIds);
   const providers = [];
   if (process.env.PEXELS_API_KEY) providers.push({
     name: 'pexels',
-    search: (asset, index) => searchPexels(asset, index, process.env.PEXELS_API_KEY, signal)
+    search: (asset, index) => searchPexels(asset, index, process.env.PEXELS_API_KEY, signal, usedMedia)
   });
   if (process.env.PIXABAY_API_KEY) providers.push({
     name: 'pixabay',
-    search: (asset, index) => searchPixabay(asset, index, process.env.PIXABAY_API_KEY, signal)
+    search: (asset, index) => searchPixabay(asset, index, process.env.PIXABAY_API_KEY, signal, usedMedia)
   });
   if (!providers.length) return sceneAssets;
 
@@ -195,7 +220,16 @@ export async function resolveStockSceneAssets(sceneAssets, jobDir, signal) {
           }
           totalBytes += byteCount;
           downloadedPaths.push(videoPath);
-          resolvedAsset = { ...asset, type: 'video', path: videoPath, source: video.provider };
+          usedMedia.add(video.mediaId);
+          usedMedia.add(video.url);
+          resolvedAsset = {
+            ...asset,
+            type: 'video',
+            path: videoPath,
+            source: video.provider,
+            mediaId: video.mediaId,
+            mediaUrl: video.url
+          };
           break;
         } catch (error) {
           if (signal?.aborted) throw error;
