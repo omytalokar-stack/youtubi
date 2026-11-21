@@ -18,6 +18,7 @@ function normalizedWords(text) {
 }
 
 const SCENE_COUNT = 8;
+const MAX_DRAFT_CORRECTIONS = 3;
 const TOPIC_STOP_WORDS = new Set([
   'about', 'after', 'again', 'also', 'been', 'before', 'being', 'could', 'from', 'have',
   'into', 'just', 'more', 'most', 'other', 'over', 'same', 'some', 'than', 'that',
@@ -232,17 +233,32 @@ export async function generateScriptDraft(prompt, generateText, validateDraft = 
   const words = typeof result.script === 'string' ? scriptWordCount(result.script) : 0;
   return words >= 55 && words <= 70 ? null : `the script has ${words} words instead of 55-70`;
 }) {
-  let result = parseJson(await generateText(prompt));
-  for (let correction = 0; correction <= 2; correction += 1) {
+  let correctionPrompt = prompt;
+  for (let correction = 0; correction <= MAX_DRAFT_CORRECTIONS; correction += 1) {
+    const response = await generateText(correctionPrompt);
+    let result;
+    try {
+      result = parseJson(response);
+    } catch (error) {
+      if (correction === MAX_DRAFT_CORRECTIONS) {
+        throw new Error(`Generated Short returned invalid JSON after ${MAX_DRAFT_CORRECTIONS} corrections: ${error.message}`);
+      }
+      correctionPrompt = `${prompt}
+
+Correction required: The previous response was not valid JSON. Return a complete, valid JSON object only, with no Markdown fences or extra text.`;
+      continue;
+    }
     const issue = validateDraft(result);
     if (!issue) return result;
-    if (correction === 2) throw new Error(`Generated Short failed validation after two corrections: ${issue}.`);
-    result = parseJson(await generateText(`${prompt}
+    if (correction === MAX_DRAFT_CORRECTIONS) {
+      throw new Error(`Generated Short failed validation after ${MAX_DRAFT_CORRECTIONS} corrections: ${issue}.`);
+    }
+    correctionPrompt = `${prompt}
 
 Correction required: ${issue}. Rewrite the complete JSON to satisfy every requested script, hook, loop, topic-uniqueness, scene-query, and alignment constraint. Target 62 words and keep subtitleBeats and scenes aligned exactly to the rewritten script.
-Previous JSON: ${JSON.stringify(result)}`));
+Previous JSON: ${JSON.stringify(result)}`;
   }
-  throw new Error('Unable to generate a script within the required word count.');
+  throw new Error('Unable to generate a valid Short draft.');
 }
 
 export async function generateShort(channelId, { onWriting } = {}) {

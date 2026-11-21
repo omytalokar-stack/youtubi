@@ -57,16 +57,41 @@ test('regenerates an overlong Gemini script before rejecting it', async () => {
   assert.equal(calls, 2);
 });
 
-test('reports the final word count after two corrective generations', async () => {
+test('reports the final word count after three corrective generations', async () => {
   let calls = 0;
   await assert.rejects(
     generateScriptDraft('Create a Short.', async () => {
       calls += 1;
       return draft(Array(75).fill('word').join(' '));
     }),
-    /after two corrections: the script has 75 words/
+    /after 3 corrections: the script has 75 words/
   );
-  assert.equal(calls, 3);
+  assert.equal(calls, 4);
+});
+
+test('regenerates a malformed Gemini response instead of failing before correction', async () => {
+  let calls = 0;
+  let correctionPrompt = '';
+  const result = await generateScriptDraft('Create a Short.', async (prompt) => {
+    if (calls++ === 0) return '{"script":';
+    correctionPrompt = prompt;
+    return JSON.stringify(validDraft());
+  });
+  assert.equal(result.topic, validDraft().topic);
+  assert.match(correctionPrompt, /previous response was not valid JSON/i);
+  assert.equal(calls, 2);
+});
+
+test('does not retry Gemini transport errors as malformed JSON', async () => {
+  let calls = 0;
+  await assert.rejects(
+    generateScriptDraft('Create a Short.', async () => {
+      calls += 1;
+      throw new Error('Gemini transport failed.');
+    }),
+    /Gemini transport failed/
+  );
+  assert.equal(calls, 1);
 });
 
 test('normalizes legacy scene output into eight cinematic animation prompts', () => {
