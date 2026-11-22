@@ -12,7 +12,7 @@ Iske teen mukhya parts hain:
 2. **Backend:** Node.js + Express; Google/YouTube APIs, Gemini, video rendering aur scheduling ko coordinate karta hai.
 3. **Persistent data:** MongoDB; channel profile, encrypted YouTube credentials, brain memory, video records aur render lock save karta hai.
 
-Deployed arrangement mein frontend Vercel par aur API alag Node service par chalti hai (README mein Render ka setup diya hai). Frontend build ke waqt `VITE_API_URL` se backend API ka pata set hota hai.
+Deployed arrangement mein frontend Vercel par aur API alag Node service par chalti hai (README mein Render ka setup diya hai). Production frontend `/api` ko same-origin Vercel rewrite se backend tak bhejta hai; local development mein `VITE_API_URL` set kiya ja sakta hai.
 
 ## 2. Technology aur folder structure
 
@@ -78,7 +78,7 @@ Yeh selected channel ke niche, language aur tone ke context mein Gemini chat hai
 - YouTube channels connect/list karna
 - PWA install state aur iOS Safari instructions
 - Har channel ka daily auto-upload toggle/time (IST)
-- OMES mode toggle, frequency/time, manual run aur upload/optimization history
+- OMES mode toggle, frequency/time, manual run aur upload/optimization history; CRON_SECRET ek baar verify hone ke baad 30-day HttpOnly session cookie use hoti hai
 - Upload privacy aur webhook schedule instructions
 
 ## 4. YouTube account connect karne ka flow
@@ -155,9 +155,10 @@ Sab routes `/api` ke neeche hain:
 | `POST /analytics/:channelId/audit` | Secret-protected analytics audit |
 | `GET/PUT /profile/:channelId` | Channel profile read/update |
 | `PATCH /channels/:channelId/schedule` | Auto-publish schedule update |
-| `PUT /channels/:channelId/omes` | Secret-protected OMES configuration update |
-| `POST /channels/:channelId/omes/run` | Secret-protected manual optimize/publish |
-| `GET /channels/:channelId/omes/history` | Secret-protected recent uploads and OMES audit history |
+| `POST/GET/DELETE /channels/omes/session` | One-time secret unlock, session check and logout |
+| `PUT /channels/:channelId/omes` | OMES configuration update via cron secret or browser session |
+| `POST /channels/:channelId/omes/run` | Manual optimize/publish via cron secret or browser session |
+| `GET /channels/:channelId/omes/history` | Recent uploads and OMES audit history via cron secret or browser session |
 | `GET/PATCH /brain/:channelId` | Brain memory read/self-correction toggle |
 | `POST /brain/tactic`, `POST /brain/mistake` | Manual brain notes |
 | `POST /automation/publish/:channelId` | Background manual publish start |
@@ -185,7 +186,7 @@ Channel-related records `channelId` se keyed hote hain. Cleanup sirf MongoDB ke 
 - YouTube refresh tokens database mein AES-256-GCM encrypted hote hain; `TOKEN_ENCRYPTION_KEY` 32-byte key hona chahiye.
 - OAuth state HMAC-SHA256 signed hota hai, random nonce rakhta hai aur 10 minute ke baad expire hota hai.
 - Scheduler/audit triggers `CRON_SECRET` check karte hain. Secret ke bina yeh protected endpoints 503 dete hain.
-- OMES settings/history/manual-run endpoints bhi wahi secret header maangte hain; frontend secret ko sirf page memory mein rakhta hai, local storage ya build bundle mein nahi.
+- OMES settings/history/manual-run endpoints cron header ya signed 30-day HttpOnly session cookie se protect hote hain. Frontend secret ek baar bhejta hai, phir clear kar deta hai; secret local/session storage ya build bundle mein nahi jata. Cookie requests configured frontend origin se validate hote hain.
 - CORS configured browser origins ko allow karta hai, lekin **CORS authentication nahi hota**.
 - Script, brain memory aur channel profile per-channel read hote hain; logs/temp job directories channel/job identifiers se alag rakhe jate hain.
 - Secret values ko `.env` files ya frontend bundle mein commit nahi karna; report mein sirf variable names diye gaye hain.
@@ -212,7 +213,7 @@ Channel-related records `channelId` se keyed hote hain. Cleanup sirf MongoDB ke 
 ### Production
 
 - Frontend build: `frontend/` ke andar `npm run build` (TypeScript project build + Vite bundle).
-- Vercel par `frontend/` project deploy hota hai; `VITE_API_URL` Vite build-time setting hai. Is value ko badalne par frontend redeploy chahiye.
+- Vercel par `frontend/` project deploy hota hai; `frontend/vercel.json` production `/api` requests ko backend par rewrite karta hai. Local dev mein `VITE_API_URL` optional hai.
 - Backend alag persistent Node.js hosting service par chalta hai aur MongoDB Atlas jaisi persistent database ko connect karta hai.
 - Google OAuth redirect URI, `PUBLIC_APP_URL`, backend CORS origins, `FRONTEND_ORIGIN`/`FRONTEND_URL`, Vercel API URL aur scheduler webhook ko ek-doosre se match/configure karna hota hai.
 - Scheduler ke liye cron-job.org timezone `Asia/Kolkata` rakhein; har alag channel schedule ke liye us waqt ka daily trigger configure karein.
@@ -226,6 +227,6 @@ App browser se installable PWA hai. Service worker app shell, hashed JS/CSS asse
 - Report banate waqt V2 frontend ka production build successful tha.
 - Latest checked production deployment `https://frontend-mu-blush-93.vercel.app` ne HTTP 200 diya.
 - GitHub `main` par latest app change commit `7eeed9c` tha.
-- Agar app mein channel load nahi hota, pehle backend `/api/health`, MongoDB Atlas allowlist/connection, `VITE_API_URL`, Google OAuth redirect aur backend environment settings check karein.
+- Agar app mein channel load nahi hota, pehle backend `/api/health`, MongoDB Atlas allowlist/connection, Vercel API rewrite, Google OAuth redirect aur backend environment settings check karein.
 - Public use badhane se pehle manual publish/chat API access control review karna uchit hai.
 

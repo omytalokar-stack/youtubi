@@ -15,10 +15,13 @@ export function Settings() {
   const [omesFrequency, setOmesFrequency] = useState<'daily' | 'alternate'>('daily');
   const [omesTimeIst, setOmesTimeIst] = useState('11:00');
   const [omesSecret, setOmesSecret] = useState('');
+  const [omesAuthenticated, setOmesAuthenticated] = useState(false);
   const [omesVideos, setOmesVideos] = useState<OmesVideoHistory[]>([]);
   const [omesAudits, setOmesAudits] = useState<OmesAuditLog[]>([]);
   const [omesHistoryLoaded, setOmesHistoryLoaded] = useState(false);
   const [loadingOmesHistory, setLoadingOmesHistory] = useState(false);
+  const [unlockingOmes, setUnlockingOmes] = useState(false);
+  const [lockingOmes, setLockingOmes] = useState(false);
   const [savingOmes, setSavingOmes] = useState(false);
   const [runningOmes, setRunningOmes] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
@@ -38,10 +41,21 @@ export function Settings() {
   }, [profile]);
   useEffect(() => {
     setOmesSecret('');
+    setOmesAuthenticated(false);
     setOmesVideos([]);
     setOmesAudits([]);
     setOmesHistoryLoaded(false);
-  }, [channelId]);
+    if (!channelId) return undefined;
+    let active = true;
+    api<{ authenticated: boolean }>('/channels/omes/session')
+      .then(({ authenticated }) => {
+        if (active) setOmesAuthenticated(authenticated);
+      })
+      .catch((error: unknown) => {
+        if (active) setNotice(error instanceof Error ? error.message : 'Could not check OMES access.');
+      });
+    return () => { active = false; };
+  }, [channelId, setNotice]);
 
   async function connect() {
     setConnecting(true);
@@ -64,15 +78,14 @@ export function Settings() {
     } finally { setSavingSchedule(false); }
   }
   async function loadOmesHistory() {
-    if (!channelId || !omesSecret) {
-      setNotice('Enter the backend CRON_SECRET to load OMES history.');
+    if (!channelId || !omesAuthenticated) {
+      setNotice('Unlock OMES access once to load its history.');
       return;
     }
     setLoadingOmesHistory(true);
     try {
       const history = await api<{ videos: OmesVideoHistory[]; auditLogs: OmesAuditLog[] }>(
-        `/channels/${encodeURIComponent(channelId)}/omes/history`,
-        { headers: { 'x-cron-secret': omesSecret } }
+        `/channels/${encodeURIComponent(channelId)}/omes/history`
       );
       setOmesVideos(history.videos);
       setOmesAudits(history.auditLogs);
@@ -83,15 +96,14 @@ export function Settings() {
   }
   async function saveOmesSettings(event: FormEvent) {
     event.preventDefault();
-    if (!channelId || !omesSecret) {
-      setNotice('Enter the backend CRON_SECRET to save OMES settings.');
+    if (!channelId || !omesAuthenticated) {
+      setNotice('Unlock OMES access once to save these settings.');
       return;
     }
     setSavingOmes(true);
     try {
       await api(`/channels/${encodeURIComponent(channelId)}/omes`, {
         method: 'PUT',
-        headers: { 'x-cron-secret': omesSecret },
         body: JSON.stringify({ enabled: omesEnabled, frequency: omesFrequency, publishTimeIst: omesTimeIst })
       });
       setNotice('OMES settings saved for this channel.');
@@ -100,9 +112,40 @@ export function Settings() {
       setNotice(error instanceof Error ? error.message : 'Could not save OMES settings.');
     } finally { setSavingOmes(false); }
   }
+  async function unlockOmes() {
+    if (!omesSecret.trim()) {
+      setNotice('Enter the backend CRON_SECRET once to unlock OMES.');
+      return;
+    }
+    setUnlockingOmes(true);
+    try {
+      await api('/channels/omes/session', {
+        method: 'POST',
+        body: JSON.stringify({ secret: omesSecret })
+      });
+      setOmesAuthenticated(true);
+      setOmesSecret('');
+      setNotice('OMES unlocked on this browser for 30 days.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not unlock OMES.');
+    } finally { setUnlockingOmes(false); }
+  }
+  async function lockOmes() {
+    setLockingOmes(true);
+    try {
+      await api('/channels/omes/session', { method: 'DELETE' });
+      setOmesAuthenticated(false);
+      setOmesVideos([]);
+      setOmesAudits([]);
+      setOmesHistoryLoaded(false);
+      setNotice('OMES locked on this browser.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not lock OMES.');
+    } finally { setLockingOmes(false); }
+  }
   async function runOmesNow() {
-    if (!channelId || !omesSecret) {
-      setNotice('Enter the backend CRON_SECRET to run OMES.');
+    if (!channelId || !omesAuthenticated) {
+      setNotice('Unlock OMES access once to run it.');
       return;
     }
     if (!window.confirm('OMES will optimize the latest uploaded video and change its YouTube visibility to PUBLIC. Continue?')) return;
@@ -110,7 +153,7 @@ export function Settings() {
     try {
       const response = await api<{ result: { skipped: boolean; reason?: string; title?: string } }>(
         `/channels/${encodeURIComponent(channelId)}/omes/run`,
-        { method: 'POST', headers: { 'x-cron-secret': omesSecret } }
+        { method: 'POST' }
       );
       setNotice(response.result.skipped
         ? response.result.reason || 'OMES did not change a video.'
@@ -173,7 +216,9 @@ export function Settings() {
         <p className="settings-copy">Use OMES when you upload videos yourself. When enabled, scheduled automation skips Short generation and instead optimizes your latest completed upload.</p>
         <div className="omes-warning"><AlertTriangle size={17} /><span><strong>Publishing permission:</strong> OMES changes the selected video's visibility to <b>Public</b>. Completed Private, Unlisted, and Public uploads are available; YouTube Studio drafts may not appear in the uploads list.</span></div>
         <form className="omes-form" onSubmit={(event) => void saveOmesSettings(event)}>
-          <label className="field omes-secret-field"><span>Backend access secret <small>CRON_SECRET · kept only in this page's memory</small></span><input type="password" autoComplete="off" value={omesSecret} disabled={!channelId} onChange={(event) => setOmesSecret(event.target.value)} placeholder="Enter CRON_SECRET" /></label>
+          {omesAuthenticated
+            ? <div className="schedule-row"><div className="schedule-info"><strong>OMES access unlocked</strong><span>Secure browser session · expires after 30 days</span></div><button type="button" className="button button-secondary" disabled={lockingOmes} onClick={() => void lockOmes()}>{lockingOmes ? 'Locking…' : 'Lock access'}</button></div>
+            : <label className="field omes-secret-field"><span>Backend access secret <small>Enter once · the server keeps it in a protected 30-day session</small></span><input type="password" autoComplete="off" value={omesSecret} disabled={!channelId || unlockingOmes} onChange={(event) => setOmesSecret(event.target.value)} placeholder="Enter CRON_SECRET once" /></label>}
           <div className="schedule-row omes-toggle-row">
             <div className="schedule-info"><strong>OMES Mode {omesEnabled ? 'ON' : 'OFF'}</strong><span>{omesEnabled ? 'Scheduled runs will not create or upload new videos.' : 'Scheduled runs continue using the normal video pipeline.'}</span></div>
             <button type="button" className={`switch ${omesEnabled ? 'switch-on' : ''}`} role="switch" aria-label="OMES Mode" aria-checked={omesEnabled} disabled={!channelId} onClick={() => setOmesEnabled((enabled) => !enabled)}><span /></button>
@@ -183,9 +228,10 @@ export function Settings() {
             <label className="field"><span>Publish time <small>Asia/Kolkata (IST)</small></span><input type="time" value={omesTimeIst} required disabled={!channelId} onChange={(event) => setOmesTimeIst(event.target.value)} /></label>
           </div>
           <div className="omes-actions">
-            <button className="button button-primary" disabled={savingOmes || !channelId}>{savingOmes ? 'Saving…' : 'Save OMES Settings'}</button>
-            <button type="button" className="button button-secondary" disabled={runningOmes || !channelId} onClick={() => void runOmesNow()}><Play size={14} />{runningOmes ? 'Optimizing…' : 'Optimize Latest Video Now'}</button>
-            <button type="button" className="button button-secondary" disabled={loadingOmesHistory || !channelId} onClick={() => void loadOmesHistory()}><RefreshCw size={14} />{loadingOmesHistory ? 'Loading…' : 'Load Video History'}</button>
+            {!omesAuthenticated && <button type="button" className="button button-primary" disabled={unlockingOmes || !channelId || !omesSecret.trim()} onClick={() => void unlockOmes()}>{unlockingOmes ? 'Unlocking…' : 'Unlock OMES once'}</button>}
+            <button className="button button-primary" disabled={savingOmes || !channelId || !omesAuthenticated}>{savingOmes ? 'Saving…' : 'Save OMES Settings'}</button>
+            <button type="button" className="button button-secondary" disabled={runningOmes || !channelId || !omesAuthenticated} onClick={() => void runOmesNow()}><Play size={14} />{runningOmes ? 'Optimizing…' : 'Optimize Latest Video Now'}</button>
+            <button type="button" className="button button-secondary" disabled={loadingOmesHistory || !channelId || !omesAuthenticated} onClick={() => void loadOmesHistory()}><RefreshCw size={14} />{loadingOmesHistory ? 'Loading…' : 'Load Video History'}</button>
           </div>
         </form>
         {omesHistoryLoaded && <div className="omes-history">

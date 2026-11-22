@@ -207,3 +207,91 @@ test('OMES settings require the cron secret and update only validated per-channe
     await once(server, 'close');
   }
 });
+
+test('OMES session unlocks once, authorizes same-origin cookie requests, and blocks cross-origin use', async (t) => {
+  const originalFindOneAndUpdate = ChannelProfile.findOneAndUpdate;
+  const previousSecret = process.env.CRON_SECRET;
+  const previousFrontendOrigin = process.env.FRONTEND_ORIGIN;
+  const previousNodeEnv = process.env.NODE_ENV;
+  const channelId = `UC${'p'.repeat(22)}`;
+  let updateCall;
+  process.env.CRON_SECRET = 'omes-session-test-secret';
+  process.env.FRONTEND_ORIGIN = 'https://studio.example';
+  process.env.NODE_ENV = 'production';
+  ChannelProfile.findOneAndUpdate = (filter, update, options) => {
+    updateCall = { filter, update, options };
+    return {
+      lean: async () => ({ channelId, automation: { omes: { enabled: true } } })
+    };
+  };
+  t.after(() => {
+    ChannelProfile.findOneAndUpdate = originalFindOneAndUpdate;
+    if (previousSecret === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = previousSecret;
+    if (previousFrontendOrigin === undefined) delete process.env.FRONTEND_ORIGIN;
+    else process.env.FRONTEND_ORIGIN = previousFrontendOrigin;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  });
+
+  const app = express();
+  app.use(express.json());
+  app.use('/api', channelRoutes);
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}/api/channels`;
+    const invalidUnlock = await fetch(`${baseUrl}/omes/session`, {
+      method: 'POST',
+      headers: { origin: 'https://studio.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: 'wrong-secret' })
+    });
+    assert.equal(invalidUnlock.status, 401);
+
+    const unlock = await fetch(`${baseUrl}/omes/session`, {
+      method: 'POST',
+      headers: { origin: 'https://studio.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: 'omes-session-test-secret' })
+    });
+    assert.equal(unlock.status, 200);
+    const setCookie = unlock.headers.get('set-cookie') || '';
+    assert.match(setCookie, /HttpOnly/i);
+    assert.match(setCookie, /Secure/i);
+    assert.match(setCookie, /SameSite=Lax/i);
+    const cookie = setCookie.split(';', 1)[0];
+
+    const session = await fetch(`${baseUrl}/omes/session`, { headers: { cookie } });
+    assert.deepEqual(await session.json(), { authenticated: true, expiresInSeconds: 30 * 24 * 60 * 60 });
+
+    const unauthorized = await fetch(`${baseUrl}/${channelId}/omes`, {
+      method: 'PUT',
+      headers: {
+        origin: 'https://untrusted.example',
+        cookie,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ enabled: true })
+    });
+    assert.equal(unauthorized.status, 401);
+    assert.equal(updateCall, undefined);
+
+    const saved = await fetch(`${baseUrl}/${channelId}/omes`, {
+      method: 'PUT',
+      headers: {
+        origin: 'https://studio.example',
+        cookie,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ enabled: true })
+    });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(updateCall.filter, { channelId });
+
+    const locked = await fetch(`${baseUrl}/omes/session`, { method: 'DELETE' });
+    assert.equal(locked.status, 204);
+    assert.match(locked.headers.get('set-cookie') || '', /Max-Age=0/);
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
+});

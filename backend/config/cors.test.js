@@ -32,6 +32,7 @@ test('preflight allows the deployed frontend and configured local development or
   for (const origin of ['https://frontend-mu-blush-93.vercel.app', 'http://localhost:5173']) {
     const response = await preflight(origin, configuredOrigins);
     assert.equal(response.headers.get('access-control-allow-origin'), origin);
+    assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
     assert.match(response.headers.get('access-control-allow-headers') || '', /content-type/i);
   }
 });

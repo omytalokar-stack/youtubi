@@ -1,4 +1,6 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_URL = import.meta.env.PROD
+  ? '/api'
+  : import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
 function getErrorMessage(body: unknown, status: number): string {
   if (body && typeof body === 'object') {
@@ -23,6 +25,7 @@ function getErrorMessage(body: unknown, status: number): string {
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...init?.headers }
   });
   const body = await response.json().catch(() => ({}));
