@@ -42,6 +42,12 @@ function fitDescription(description, footer) {
   return `${fittedBody ? `${fittedBody}\n\n` : ''}${normalizedFooter}`;
 }
 
+function getYoutubeTagsLength(tags) {
+  const tagCharacters = tags.reduce((length, tag) =>
+    length + tag.length + (tag.includes(' ') ? 2 : 0), 0);
+  return tagCharacters + Math.max(0, tags.length - 1);
+}
+
 function fitTags(tags, requiredTags = []) {
   if (!Array.isArray(tags)) throw new Error('Gemini returned tags in an invalid format.');
   const unique = new Map();
@@ -52,7 +58,7 @@ function fitTags(tags, requiredTags = []) {
   const result = [];
   for (const tag of unique.values()) {
     const candidate = [...result, tag];
-    if (candidate.join(',').length > TAGS_LIMIT) {
+    if (getYoutubeTagsLength(candidate) > TAGS_LIMIT) {
       if (requiredTags.some((required) => String(required).toLocaleLowerCase() === tag.toLocaleLowerCase())) {
         throw new Error('The channel core tags exceed YouTube’s 500-character tag limit.');
       }
