@@ -7,10 +7,10 @@ import {
   getPipelineStatus, isScheduledChannelStillEligible, RENDER_LOCK_HEARTBEAT_MS,
   RENDER_LOCK_TTL_MS, recordPublishedDate, publishNow, prepareScheduledRun,
   runScheduledTrigger, subscribeToPipelineStatus, updatePipelineStatus,
-  SCHEDULE_WINDOW_MINUTES
+  SCHEDULE_RETRY_BASE_MS
 } from './queueWorkerService.js';
 
-test('matches channel schedules only at or within the 25-minute IST window', () => {
+test('catches up scheduled channels any time after their IST publish time on the same day', () => {
   const current = getIstSchedule(new Date('2026-11-18T10:30:00.000Z'));
   const profile = {
     autoPublishEnabled: true,
@@ -18,10 +18,9 @@ test('matches channel schedules only at or within the 25-minute IST window', () 
     lastAutoPublishedDateIst: ''
   };
   assert.deepEqual(current, { todayIst: '2026-11-18', timeIst: '16:00' });
-  assert.equal(SCHEDULE_WINDOW_MINUTES, 25);
   assert.equal(isChannelDueForSchedule(profile, current), true);
   assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '16:25' }), true);
-  assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '16:26' }), false);
+  assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '23:59' }), true);
   assert.equal(isChannelDueForSchedule(profile, { ...current, timeIst: '15:59' }), false);
   assert.equal(isChannelDueForSchedule({ ...profile, autoPublishEnabled: undefined }, current), false);
 });
@@ -46,11 +45,13 @@ test('does not reschedule a channel already published on the current IST date', 
   }, current), false);
 });
 
-test('schedules OMES at its own IST time and enforces the alternate-day cooldown', () => {
+test('catches up OMES after its IST time and enforces the alternate-day cooldown', () => {
   const now = new Date('2026-11-18T05:30:00.000Z');
   const current = getIstSchedule(now);
   const daily = { automation: { omes: { enabled: true, frequency: 'daily', publishTimeIst: '11:00' } } };
   assert.equal(isChannelDueForSchedule(daily, current, now), true);
+  assert.equal(isOmesDueForSchedule(daily, { ...current, timeIst: '22:30' }, now), true);
+  assert.equal(isOmesDueForSchedule(daily, { ...current, timeIst: '10:59' }, now), false);
 
   const alternate = {
     automation: {
@@ -68,7 +69,7 @@ test('schedules OMES at its own IST time and enforces the alternate-day cooldown
   }, current, now), false);
 });
 
-test('keeps a queued channel eligible after the trigger window if its schedule is unchanged', () => {
+test('keeps a queued channel eligible after its scheduled time if its schedule is unchanged', () => {
   const scheduledProfile = {
     autoPublishEnabled: true,
     publishTimeIst: '16:00',
@@ -94,6 +95,65 @@ test('keeps a queued channel eligible after the trigger window if its schedule i
     ...scheduledProfile,
     automation: { omes: { enabled: true } }
   }, scheduledProfile, '2026-11-18'), false);
+});
+
+test('does not repeat a terminal failure or bypass a queued retry delay', async (t) => {
+  const originalFind = ChannelProfile.find;
+  t.after(() => { ChannelProfile.find = originalFind; });
+  const channelId = `UC${'x'.repeat(22)}`;
+  const currentDate = '2026-11-18';
+  const baseProfile = {
+    channelId,
+    autoPublishEnabled: true,
+    publishTimeIst: '16:00',
+    lastAutoPublishedDateIst: '',
+    automation: { omes: { enabled: false } }
+  };
+  const terminalProfile = {
+    ...baseProfile,
+    automation: {
+      ...baseProfile.automation,
+      lastRun: {
+        status: 'failed',
+        source: 'scheduled',
+        mode: 'auto-upload',
+        scheduledDateIst: currentDate,
+        scheduledTimeIst: '16:00'
+      }
+    }
+  };
+  assert.equal(isChannelDueForSchedule(
+    terminalProfile,
+    { todayIst: currentDate, timeIst: '23:00' },
+    new Date('2026-11-18T17:30:00.000Z')
+  ), false);
+
+  const retryProfile = {
+    ...baseProfile,
+    automation: {
+      ...baseProfile.automation,
+      lastRun: {
+        status: 'queued',
+        source: 'scheduled',
+        mode: 'auto-upload',
+        scheduledDateIst: currentDate,
+        scheduledTimeIst: '16:00',
+        retryCount: 1,
+        nextAttemptAt: new Date('2026-11-18T10:31:00.000Z')
+      }
+    }
+  };
+  ChannelProfile.find = () => ({ lean: async () => [retryProfile] });
+  const tooEarly = await prepareScheduledRun({ now: new Date('2026-11-18T10:30:30.000Z') });
+  assert.equal(tooEarly.dueProfiles.length, 0);
+
+  const afterDelay = await prepareScheduledRun({
+    now: new Date('2026-11-18T10:32:00.000Z'),
+    recordRun: async () => {}
+  });
+  assert.equal(afterDelay.dueProfiles.length, 1);
+  assert.equal(afterDelay.dueProfiles[0].automation.lastRun.retryCount, 1);
+  assert.equal(afterDelay.dueProfiles[0].automation.lastRun.nextAttemptAt, null);
 });
 
 test('runs due channels sequentially in isolated channelId scopes', async (t) => {
@@ -195,11 +255,13 @@ test('temporary provider failures remain queued for the 10-second scheduled work
   const originalFind = ChannelProfile.find;
   const channelId = `UC${'r'.repeat(22)}`;
   const persisted = [];
+  const now = new Date();
+  const publishTimeIst = getIstSchedule(now).timeIst;
   ChannelProfile.find = () => ({
     lean: async () => [{
       channelId,
       autoPublishEnabled: true,
-      publishTimeIst: '16:00',
+      publishTimeIst,
       lastAutoPublishedDateIst: '',
       automation: { omes: { enabled: false } }
     }]
@@ -207,7 +269,7 @@ test('temporary provider failures remain queued for the 10-second scheduled work
   t.after(() => { ChannelProfile.find = originalFind; });
 
   const result = await runScheduledTrigger({
-    now: new Date('2026-11-18T10:30:00.000Z'),
+    now,
     recordRun: async (id, run) => persisted.push({ id, run }),
     publish: async () => {
       throw Object.assign(new Error('Gemini quota temporarily exhausted'), { status: 429 });
@@ -217,6 +279,9 @@ test('temporary provider failures remain queued for the 10-second scheduled work
   assert.equal(result.results[0].retryQueued, true);
   assert.equal(persisted.at(-1).run.status, 'queued');
   assert.match(persisted.at(-1).run.reason, /retrying automatically/);
+  assert.equal(persisted.at(-1).run.retryCount, 1);
+  assert.ok(persisted.at(-1).run.nextAttemptAt > now);
+  assert.ok(persisted.at(-1).run.nextAttemptAt <= new Date(now.getTime() + SCHEDULE_RETRY_BASE_MS + 1000));
 });
 
 test('routes due OMES channels to optimization instead of native video generation', async (t) => {

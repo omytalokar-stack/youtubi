@@ -54,7 +54,9 @@ const ChannelProfileSchema = new mongoose.Schema({
       scheduledDateIst: { type: String, default: '' },
       scheduledTimeIst: { type: String, default: '' },
       startedAt: { type: Date, default: null },
-      finishedAt: { type: Date, default: null }
+      finishedAt: { type: Date, default: null },
+      retryCount: { type: Number, min: 0, default: 0 },
+      nextAttemptAt: { type: Date, default: null }
     }
   }
 }, { timestamps: true });

@@ -12,7 +12,8 @@ import { pruneChannelLogs } from './logCleanupService.js';
 const LOCK_KEY = 'GLOBAL_RENDER_WORKER';
 export const RENDER_LOCK_TTL_MS = 15 * 60 * 1000;
 export const RENDER_LOCK_HEARTBEAT_MS = 60 * 1000;
-export const SCHEDULE_WINDOW_MINUTES = 25;
+export const SCHEDULE_RETRY_BASE_MS = 30 * 1000;
+export const SCHEDULE_RETRY_MAX_MS = 60 * 60 * 1000;
 const DEFAULT_PUBLISH_TIME_IST = '16:00';
 const PUBLISH_TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 let processRenderActive = false;
@@ -125,11 +126,12 @@ export function isOmesDueForSchedule(profile, current = getIstSchedule(), now = 
   const [publishHour, publishMinute] = omes.publishTimeIst.split(':').map(Number);
   const [currentHour, currentMinute] = current.timeIst.split(':').map(Number);
   const minutesAfterSchedule = (currentHour * 60 + currentMinute) - (publishHour * 60 + publishMinute);
-  if (minutesAfterSchedule < 0 || minutesAfterSchedule > SCHEDULE_WINDOW_MINUTES) return false;
+  if (minutesAfterSchedule < 0 || hasScheduledRunForDate(profile, current, 'omes')) return false;
   if (!omes.lastOmesRunAt) return true;
 
   const lastRun = new Date(omes.lastOmesRunAt);
-  if (Number.isNaN(lastRun.getTime()) || getIstSchedule(lastRun).todayIst === current.todayIst) return false;
+  if (Number.isNaN(lastRun.getTime()) || lastRun > now ||
+      getIstSchedule(lastRun).todayIst === current.todayIst) return false;
   if (omes.frequency === 'alternate') {
     return now.getTime() - lastRun.getTime() >= 44 * 60 * 60 * 1000;
   }
@@ -139,18 +141,29 @@ export function isOmesDueForSchedule(profile, current = getIstSchedule(), now = 
 export function isChannelDueForSchedule(profile, current = getIstSchedule(), now = new Date()) {
   if (profile.automation?.omes?.enabled === true) return isOmesDueForSchedule(profile, current, now);
   if (profile.autoPublishEnabled !== true ||
-      profile.lastAutoPublishedDateIst === current.todayIst) return false;
+      profile.lastAutoPublishedDateIst === current.todayIst ||
+      hasScheduledRunForDate(profile, current, 'auto-upload')) return false;
   const publishTimeIst = getChannelPublishTimeIst(profile);
   if (!PUBLISH_TIME_PATTERN.test(publishTimeIst)) return false;
   const [publishHour, publishMinute] = publishTimeIst.split(':').map(Number);
   const [currentHour, currentMinute] = current.timeIst.split(':').map(Number);
   const minutesAfterSchedule = (currentHour * 60 + currentMinute) - (publishHour * 60 + publishMinute);
-  return minutesAfterSchedule >= 0 && minutesAfterSchedule <= SCHEDULE_WINDOW_MINUTES;
+  return minutesAfterSchedule >= 0;
 }
 
-function canResumeScheduledRun(profile) {
+function hasScheduledRunForDate(profile, current, mode) {
+  const run = profile.automation?.lastRun;
+  return run?.source === 'scheduled' &&
+    run.mode === mode &&
+    run.scheduledDateIst === current.todayIst &&
+    run.scheduledTimeIst === getChannelPublishTimeIst(profile) &&
+    ['queued', 'running', 'completed', 'skipped', 'failed'].includes(run.status);
+}
+
+function canResumeScheduledRun(profile, now = new Date()) {
   const run = profile.automation?.lastRun;
   if (!run || !['queued', 'running'].includes(run.status) || run.source !== 'scheduled') return false;
+  if (run.nextAttemptAt && new Date(run.nextAttemptAt) > now) return false;
   if (run.mode === 'omes') {
     return profile.automation?.omes?.enabled === true &&
       getChannelPublishTimeIst(profile) === run.scheduledTimeIst;
@@ -165,9 +178,11 @@ async function saveScheduledRun(channelId, run) {
   const update = {};
   for (const field of [
     'status', 'source', 'mode', 'stage', 'failedAtStage', 'reason', 'title',
-    'videoId', 'scheduledDateIst', 'scheduledTimeIst', 'startedAt', 'finishedAt'
+    'videoId', 'scheduledDateIst', 'scheduledTimeIst', 'startedAt', 'finishedAt',
+    'retryCount', 'nextAttemptAt'
   ]) {
-    update[`automation.lastRun.${field}`] = run[field] ?? (field === 'finishedAt' ? null : '');
+    update[`automation.lastRun.${field}`] = run[field] ??
+      (['finishedAt', 'nextAttemptAt'].includes(field) ? null : field === 'retryCount' ? 0 : '');
   }
   const result = await ChannelProfile.updateOne({ channelId }, { $set: update });
   if (result.matchedCount === 0) throw new Error(`Channel profile not found while saving scheduled status for ${channelId}.`);
@@ -180,7 +195,7 @@ export async function prepareScheduledRun({ now = new Date(), recordRun = saveSc
     ...profile,
     autoPublishEnabled: profile.autoPublishEnabled === undefined ? true : profile.autoPublishEnabled
   })).filter((profile) =>
-    isChannelDueForSchedule(profile, current, now) || canResumeScheduledRun(profile)
+    isChannelDueForSchedule(profile, current, now) || canResumeScheduledRun(profile, now)
   ).sort((left, right) =>
     getChannelPublishTimeIst(left).localeCompare(getChannelPublishTimeIst(right)) ||
     left.channelId.localeCompare(right.channelId)
@@ -201,7 +216,9 @@ export async function prepareScheduledRun({ now = new Date(), recordRun = saveSc
       scheduledDateIst: resuming ? previous.scheduledDateIst : current.todayIst,
       scheduledTimeIst: getChannelPublishTimeIst(profile),
       startedAt: resuming ? previous.startedAt || now : now,
-      finishedAt: null
+      finishedAt: null,
+      retryCount: resuming ? previous.retryCount || 0 : 0,
+      nextAttemptAt: null
     };
     await recordRun(profile.channelId, run);
     updatePipelineStatus(profile.channelId, 'queued', {
@@ -435,7 +452,8 @@ async function runScheduledTriggerOnce({
       failedAtStage: '',
       reason: '',
       startedAt: queuedRun.startedAt || now,
-      finishedAt: null
+      finishedAt: null,
+      nextAttemptAt: null
     };
     await saveRunStatusSafely(recordRun, channelId, runningRun, 'running');
     updatePipelineStatus(channelId, runningRun.stage, {
@@ -472,7 +490,8 @@ async function runScheduledTriggerOnce({
           status: 'skipped',
           stage: 'idle',
           reason,
-          finishedAt
+          finishedAt,
+          nextAttemptAt: null
         };
         updatePipelineStatus(channelId, 'idle', {
           reason, runStatus: 'skipped', runSource: 'scheduled', runMode
@@ -490,7 +509,9 @@ async function runScheduledTriggerOnce({
         reason: '',
         title,
         videoId,
-        finishedAt
+        finishedAt,
+        retryCount: 0,
+        nextAttemptAt: null
       };
       updatePipelineStatus(channelId, 'completed', {
         lastVideoTitle: title,
@@ -505,12 +526,19 @@ async function runScheduledTriggerOnce({
       const failedAtStage = pipelineStatuses.get(channelId)?.failedAtStage ||
         (isOmes ? 'optimizing' : pipelineStatuses.get(channelId)?.stage || 'dna');
       if (isTransientScheduledError(error)) {
+        const retryCount = (runningRun.retryCount || 0) + 1;
+        const retryDelay = Math.min(
+          SCHEDULE_RETRY_BASE_MS * (2 ** (retryCount - 1)),
+          SCHEDULE_RETRY_MAX_MS
+        );
         const retryRun = {
           ...runningRun,
           status: 'queued',
           stage: 'queued',
           reason: `Temporary provider failure; retrying automatically: ${error.message}`,
           failedAtStage: '',
+          retryCount,
+          nextAttemptAt: new Date(Date.now() + retryDelay),
           finishedAt: null
         };
         updatePipelineStatus(channelId, 'queued', {
@@ -530,7 +558,8 @@ async function runScheduledTriggerOnce({
         stage: 'failed',
         failedAtStage,
         reason: error.message,
-        finishedAt: new Date()
+        finishedAt: new Date(),
+        nextAttemptAt: null
       };
       updatePipelineStatus(channelId, 'failed', {
         failedAtStage, reason: error.message, runStatus: 'failed',
