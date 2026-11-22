@@ -122,6 +122,7 @@ test('does not repeat a terminal failure or bypass a queued retry delay', async 
       }
     }
   };
+  ChannelProfile.find = () => ({ lean: async () => [terminalProfile] });
   assert.equal(isChannelDueForSchedule(
     terminalProfile,
     { todayIst: currentDate, timeIst: '23:00' },
