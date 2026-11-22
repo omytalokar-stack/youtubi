@@ -4,9 +4,46 @@ import ChannelProfile from '../models/ChannelProfile.js';
 import YouTubeCredential from '../models/YouTubeCredential.js';
 import VideoLog from '../models/VideoLog.js';
 import {
-  buildShortUploadRequest, getChannelAuth, getChannelVideosHistory, hasCompletePublicMetadata,
+  buildShortUploadRequest, getCachedChannelStats, getChannelAuth, getChannelVideosHistory, hasCompletePublicMetadata,
   optimizeAndPublishLatestVideo, persistChannelStats, updateChannelVideoMetadata
 } from './youtubeService.js';
+
+test('builds dashboard statistics from saved channel and video records', async (t) => {
+  const originalProfileFindOne = ChannelProfile.findOne;
+  const originalVideoFind = VideoLog.find;
+  t.after(() => {
+    ChannelProfile.findOne = originalProfileFindOne;
+    VideoLog.find = originalVideoFind;
+  });
+  ChannelProfile.findOne = () => ({
+    lean: async () => ({
+      channelTitle: 'Saved channel',
+      youtubeStats: {
+        subscriberCount: 20, viewCount: 100, videoCount: 5, watchTimeMinutes: 45,
+        syncedAt: new Date('2026-11-18T10:00:00.000Z')
+      }
+    })
+  });
+  VideoLog.find = () => ({
+    sort() { return this; },
+    limit() { return this; },
+    lean: async () => [{
+      videoId: 'video-a', title: 'Recent Short', publishedAt: new Date('2026-11-18T10:00:00.000Z'),
+      views: 50, likes: 3, impressions: 120, ctr: 4.5,
+      averageViewDuration: 18, retention: 72, watchTimeMinutes: 15
+    }]
+  });
+
+  assert.deepEqual(await getCachedChannelStats('UCsaved'), {
+    channel: { channelId: 'UCsaved', channelTitle: 'Saved channel', thumbnailUrl: '' },
+    kpis: { views: 100, subscribers: 20, watchTimeMinutes: 45, videos: 5 },
+    recentVideos: [{
+      videoId: 'video-a', title: 'Recent Short', publishedAt: '2026-11-18T10:00:00.000Z',
+      views: 50, likes: 3, watchTimeMinutes: 15, impressions: 120, ctr: 4.5,
+      averageViewDuration: 18, retention: 72
+    }]
+  });
+});
 
 test('persists channel KPIs and recent video analytics in the matching channel scope', async (t) => {
   const originalProfileUpdate = ChannelProfile.findOneAndUpdate;

@@ -138,7 +138,7 @@ export async function listConnectedChannels() {
   return YouTubeCredential.find({}).select('channelId channelTitle thumbnailUrl').sort({ channelTitle: 1 }).lean();
 }
 
-export async function getChannelStats(channelId) {
+async function fetchLiveChannelStats(channelId) {
   const auth = await getChannelAuth(channelId);
   const youtube = google.youtube({ version: 'v3', auth });
   const [channelResponse, videoResponse] = await Promise.all([
@@ -193,6 +193,54 @@ export async function getChannelStats(channelId) {
   };
   await persistChannelStats(channelId, stats);
   return stats;
+}
+
+function isYouTubeRateLimitError(error) {
+  const status = Number(error?.response?.status || error?.status || error?.code);
+  const reason = error?.errors?.[0]?.reason || error?.response?.data?.error?.errors?.[0]?.reason || '';
+  return status === 429 || status >= 500 ||
+    /quotaExceeded|rateLimitExceeded|userRateLimitExceeded/i.test(reason);
+}
+
+export async function getCachedChannelStats(channelId) {
+  const profile = await ChannelProfile.findOne({ channelId }).lean();
+  if (!profile) return null;
+  const videos = await VideoLog.find({ channelId }).sort({ publishedAt: -1 }).limit(10).lean();
+  const savedStats = profile.youtubeStats || {};
+  if (!savedStats.syncedAt && !videos.length) return null;
+  return {
+    channel: { channelId, channelTitle: profile.channelTitle, thumbnailUrl: '' },
+    kpis: {
+      views: Number(savedStats.viewCount || 0),
+      subscribers: Number(savedStats.subscriberCount || 0),
+      watchTimeMinutes: Number(savedStats.watchTimeMinutes || 0),
+      videos: Number(savedStats.videoCount || 0)
+    },
+    recentVideos: videos.map((video) => ({
+      videoId: video.videoId,
+      title: video.title,
+      publishedAt: video.publishedAt ? new Date(video.publishedAt).toISOString() : '',
+      views: Number(video.views || 0),
+      likes: Number(video.likes || 0),
+      watchTimeMinutes: Number(video.watchTimeMinutes || 0),
+      impressions: Number(video.impressions || 0),
+      ctr: Number(video.ctr || 0),
+      averageViewDuration: Number(video.averageViewDuration || 0),
+      retention: Number(video.retention || 0)
+    }))
+  };
+}
+
+export async function getChannelStats(channelId) {
+  try {
+    return await fetchLiveChannelStats(channelId);
+  } catch (error) {
+    if (!isYouTubeRateLimitError(error)) throw error;
+    const cachedStats = await getCachedChannelStats(channelId);
+    if (!cachedStats) throw error;
+    console.warn(`YouTube stats refresh limited for ${channelId}; serving saved statistics.`);
+    return cachedStats;
+  }
 }
 
 export async function persistChannelStats(channelId, stats) {

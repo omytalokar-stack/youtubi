@@ -85,20 +85,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setChannelId = (id: string) => {
     localStorage.setItem('dimag-selected-channel', id);
+    if (id !== channelId) {
+      setProfile(null);
+      setBrain(null);
+      setStats(null);
+    }
     setChannelIdState(id);
   };
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError('');
-    setProfile(null);
-    setBrain(null);
-    setStats(null);
     try {
       const { channels: connected } = await api<{ channels: Channel[] }>('/youtube/channels');
       setChannels(connected);
       const currentId = connected.some((item) => item.channelId === channelId) ? channelId : connected[0]?.channelId || '';
       if (currentId !== channelId) {
+        setProfile(null);
+        setBrain(null);
+        setStats(null);
         localStorage.setItem('dimag-selected-channel', currentId);
         setChannelIdState(currentId);
       }
@@ -106,12 +111,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setProfile(null); setBrain(null); setStats(null);
         return;
       }
-      const [profileResult, brainResult, statsResult] = await Promise.all([
+      const results = await Promise.allSettled([
         api<{ profile: Profile }>(`/profile/${encodeURIComponent(currentId)}`),
         api<{ brain: Brain }>(`/brain/${encodeURIComponent(currentId)}`),
         api<Stats>(`/youtube/stats/${encodeURIComponent(currentId)}`)
       ]);
-      setProfile(profileResult.profile); setBrain(brainResult.brain); setStats(statsResult);
+      const [profileResult, brainResult, statsResult] = results;
+      if (profileResult.status === 'fulfilled') setProfile(profileResult.value.profile);
+      if (brainResult.status === 'fulfilled') setBrain(brainResult.value.brain);
+      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
+      const failure = results.find((result) => result.status === 'rejected');
+      if (failure?.status === 'rejected') {
+        throw failure.reason;
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load channel data.');
     } finally { setLoading(false); }
