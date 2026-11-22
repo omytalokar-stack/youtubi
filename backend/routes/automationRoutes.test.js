@@ -147,11 +147,11 @@ test('persists all due channel states before acknowledging the cron trigger', as
     assert.equal((await response.json()).queuedChannels, 1);
     const result = await completed;
     assert.equal(result.results[0].reason, 'Another channel is rendering or uploading.');
-    assert.equal(writes.at(-1).update.$set['automation.lastRun.status'], 'skipped');
+    assert.equal(writes.at(-1).update.$set['automation.lastRun.status'], 'queued');
 
     const status = await fetch(`http://127.0.0.1:${server.address().port}/api/automation/status/${channelId}`);
     const statusBody = await status.json();
-    assert.equal(statusBody.runStatus, 'skipped');
+    assert.equal(statusBody.runStatus, 'queued');
     assert.equal(statusBody.reason, 'Another channel is rendering or uploading.');
   } finally {
     server.close();

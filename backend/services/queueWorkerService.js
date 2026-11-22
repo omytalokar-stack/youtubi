@@ -399,7 +399,14 @@ async function saveRunStatusSafely(recordRun, channelId, run, phase) {
   }
 }
 
-export async function runScheduledTrigger({
+function isTransientScheduledError(error) {
+  const status = Number(error?.status ?? error?.response?.status ?? error?.code);
+  const message = `${error?.message || ''} ${error?.code || ''}`.toLowerCase();
+  return [429, 500, 502, 503, 504].includes(status) ||
+    /resource_exhausted|quota|rate limit|temporarily unavailable|timeout|timed out|econnreset|etimedout|socket hang up/.test(message);
+}
+
+async function runScheduledTriggerOnce({
   now = new Date(), publish, publishOmes, recordRun = saveScheduledRun, prepared
 } = {}) {
   const schedule = prepared || await prepareScheduledRun({ now, recordRun });
@@ -445,6 +452,21 @@ export async function runScheduledTrigger({
       const finishedAt = new Date();
       if (result.skipped) {
         const reason = result.reason || 'The scheduled channel run was skipped.';
+        if (/rendering or uploading|render lock|lock/i.test(reason)) {
+          const queuedRun = {
+            ...runningRun,
+            status: 'queued',
+            stage: 'queued',
+            reason,
+            finishedAt: null
+          };
+          updatePipelineStatus(channelId, 'queued', {
+            reason, runStatus: 'queued', runSource: 'scheduled', runMode
+          });
+          await saveRunStatusSafely(recordRun, channelId, queuedRun, 'queued');
+          results.push({ ...result, channelId, published: false, retryQueued: true });
+          continue;
+        }
         const skippedRun = {
           ...runningRun,
           status: 'skipped',
@@ -482,6 +504,26 @@ export async function runScheduledTrigger({
     } catch (error) {
       const failedAtStage = pipelineStatuses.get(channelId)?.failedAtStage ||
         (isOmes ? 'optimizing' : pipelineStatuses.get(channelId)?.stage || 'dna');
+      if (isTransientScheduledError(error)) {
+        const retryRun = {
+          ...runningRun,
+          status: 'queued',
+          stage: 'queued',
+          reason: `Temporary provider failure; retrying automatically: ${error.message}`,
+          failedAtStage: '',
+          finishedAt: null
+        };
+        updatePipelineStatus(channelId, 'queued', {
+          reason: retryRun.reason,
+          runStatus: 'queued',
+          runSource: 'scheduled',
+          runMode
+        });
+        await saveRunStatusSafely(recordRun, channelId, retryRun, 'queued retry');
+        console.warn(`Scheduled ${isOmes ? 'OMES optimization' : 'publish'} is queued for automatic retry: ${channelId}: ${error.message}`);
+        results.push({ channelId, published: false, retryQueued: true, error: error.message });
+        continue;
+      }
       const failedRun = {
         ...runningRun,
         status: 'failed',
@@ -500,4 +542,27 @@ export async function runScheduledTrigger({
     }
   }
   return { published: results.some((result) => result.published), results };
+}
+
+let scheduledTriggerActive = false;
+let scheduledTriggerPending = false;
+
+export async function runScheduledTrigger(options = {}) {
+  if (scheduledTriggerActive) {
+    scheduledTriggerPending = true;
+    return { published: false, results: [], pending: true, reason: 'Scheduled trigger queued behind the active worker.' };
+  }
+  scheduledTriggerActive = true;
+  try {
+    let callOptions = { ...options };
+    while (true) {
+      scheduledTriggerPending = false;
+      const result = await runScheduledTriggerOnce(callOptions);
+      if (!scheduledTriggerPending) return result;
+      const { prepared: _prepared, ...freshOptions } = callOptions;
+      callOptions = freshOptions;
+    }
+  } finally {
+    scheduledTriggerActive = false;
+  }
 }

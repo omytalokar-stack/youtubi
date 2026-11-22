@@ -191,6 +191,34 @@ test('records automatic publication dates using only the matching channel ID', a
   });
 });
 
+test('temporary provider failures remain queued for the 10-second scheduled worker', async (t) => {
+  const originalFind = ChannelProfile.find;
+  const channelId = `UC${'r'.repeat(22)}`;
+  const persisted = [];
+  ChannelProfile.find = () => ({
+    lean: async () => [{
+      channelId,
+      autoPublishEnabled: true,
+      publishTimeIst: '16:00',
+      lastAutoPublishedDateIst: '',
+      automation: { omes: { enabled: false } }
+    }]
+  });
+  t.after(() => { ChannelProfile.find = originalFind; });
+
+  const result = await runScheduledTrigger({
+    now: new Date('2026-11-18T10:30:00.000Z'),
+    recordRun: async (id, run) => persisted.push({ id, run }),
+    publish: async () => {
+      throw Object.assign(new Error('Gemini quota temporarily exhausted'), { status: 429 });
+    }
+  });
+
+  assert.equal(result.results[0].retryQueued, true);
+  assert.equal(persisted.at(-1).run.status, 'queued');
+  assert.match(persisted.at(-1).run.reason, /retrying automatically/);
+});
+
 test('routes due OMES channels to optimization instead of native video generation', async (t) => {
   const originalFind = ChannelProfile.find;
   const channelId = `UC${'m'.repeat(22)}`;

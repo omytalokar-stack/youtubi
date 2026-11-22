@@ -7,6 +7,7 @@ import youtubeRoutes from './routes/youtubeRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
 import channelRoutes from './routes/channelRoutes.js';
 import automationRoutes from './routes/automationRoutes.js';
+import { runScheduledTrigger } from './services/queueWorkerService.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -40,11 +41,13 @@ app.use((error, req, res, next) => {
 const port = Number(process.env.PORT || 4000);
 let server;
 let shuttingDown = false;
+let scheduledWorkerTimer;
 
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.info(`Received ${signal}; shutting down Dimag AI V2.`);
+  if (scheduledWorkerTimer) clearInterval(scheduledWorkerTimer);
   if (server) await new Promise((resolve) => server.close(resolve));
   await disconnectDatabase();
 }
@@ -60,6 +63,13 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 
 function startServer() {
   server = app.listen(port, () => console.info(`Dimag AI V2 API listening on ${port}.`));
+  scheduledWorkerTimer = setInterval(() => {
+    if (mongoose.connection.readyState !== 1) return;
+    runScheduledTrigger().catch((error) => {
+      console.error('Internal scheduled worker check failed:', error);
+    });
+  }, 10 * 1000);
+  scheduledWorkerTimer.unref();
 }
 
 connectDatabase().then(startServer).catch((error) => {

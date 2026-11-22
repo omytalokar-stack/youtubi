@@ -1,15 +1,19 @@
 import { GoogleGenAI } from '@google/genai';
 
-const configuredKeys = [
-  process.env.GEMINI_API_KEY,
-  process.env.GEMINI_API_KEY_2,
-  ...(process.env.GEMINI_API_KEYS || '').split(',')
-].filter((key) => typeof key === 'string').map((key) => key.trim()).filter(Boolean);
+function getConfiguredKeys() {
+  const configuredKeys = [
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEY_2,
+    ...(process.env.GEMINI_API_KEYS || '').split(',')
+  ].filter((key) => typeof key === 'string').map((key) => key.trim()).filter(Boolean);
+  return [...new Set(configuredKeys)];
+}
 
-const keys = [...new Set(configuredKeys)];
 let nextIndex = 0;
 const backoffStatuses = new Set([404, 429, 503]);
 const retryBackoffMs = 1500;
+const keyCooldownUntil = new Map();
+const keyCooldownMs = 60 * 1000;
 
 export const GEMINI_TEXT_MODELS = [
   'gemini-2.5-flash',
@@ -35,22 +39,53 @@ function shouldRetryKey(error) {
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+function selectAvailableKey(keys) {
+  const now = Date.now();
+  for (let offset = 0; offset < keys.length; offset += 1) {
+    const index = (nextIndex + offset) % keys.length;
+    const key = keys[index];
+    if ((keyCooldownUntil.get(key) || 0) <= now) {
+      nextIndex = (index + 1) % keys.length;
+      return key;
+    }
+  }
+  const key = keys[nextIndex];
+  nextIndex = (nextIndex + 1) % keys.length;
+  return key;
+}
+
+function putKeyOnCooldown(apiKey, error) {
+  const status = statusCode(error);
+  if ([401, 403, 429, 503].includes(status) || status === undefined) {
+    keyCooldownUntil.set(apiKey, Date.now() + keyCooldownMs);
+  }
+}
+
+export function resetGeminiKeyStateForTests() {
+  nextIndex = 0;
+  keyCooldownUntil.clear();
+}
+
 export function createGeminiClient(apiKey) {
   return new GoogleGenAI({ apiKey, httpOptions: { retryOptions: { attempts: 1 } } });
 }
 
-export async function withGeminiKey(operation, attempts = keys.length) {
+export async function withGeminiKey(operation, attempts) {
+  const keys = getConfiguredKeys();
   if (!keys.length) throw new Error('Configure at least one Gemini API key.');
-  const maxAttempts = Math.max(1, Math.min(attempts, keys.length));
+  const requestedAttempts = Number.isInteger(attempts) ? attempts : keys.length;
+  const maxAttempts = Math.max(1, Math.min(requestedAttempts, keys.length));
   let lastError;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const key = keys[nextIndex];
-    nextIndex = (nextIndex + 1) % keys.length;
+    const key = selectAvailableKey(keys);
     try {
-      return await operation(key);
+      const result = await operation(key);
+      keyCooldownUntil.delete(key);
+      return result;
     } catch (error) {
       lastError = error;
       if (!shouldRetryKey(error)) throw error;
+      putKeyOnCooldown(key, error);
       if (backoffStatuses.has(statusCode(error)) && attempt + 1 < maxAttempts) {
         await delay(retryBackoffMs);
       }

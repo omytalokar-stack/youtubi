@@ -164,7 +164,7 @@ export function Settings() {
           <div className="webhook-card">
             <div className="webhook-heading"><div><strong>cron-job.org Webhook URL</strong><small>Daily trigger for scheduled uploads</small></div><button type="button" className="button button-secondary webhook-copy" onClick={() => void copyWebhookUrl()}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? 'Copied' : 'Copy URL'}</button></div>
             <input className="webhook-url" aria-label="Cron webhook URL" readOnly value={WEBHOOK_URL} onFocus={(event) => event.currentTarget.select()} />
-            <p>Set the cron-job.org timezone to Asia/Kolkata and trigger this URL daily at this channel’s exact IST time. If channels use different times, create a job for each time using this same URL. Add the <code>x-cron-secret</code> header when <code>CRON_SECRET</code> is configured. No 10-minute keep-alive pings are needed.</p>
+            <p>The backend checks schedules every 10 seconds and also retries queued jobs automatically. cron-job.org is optional backup; if used, set its timezone to Asia/Kolkata and trigger this URL daily at this channel’s exact IST time. If channels use different times, create a job for each time using this same URL. Add the <code>x-cron-secret</code> header when <code>CRON_SECRET</code> is configured.</p>
           </div>
         </form>
       </section>
