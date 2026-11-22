@@ -31,8 +31,27 @@ type AppContextValue = {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+function getSavedChannels(): Channel[] {
+  const saved = localStorage.getItem('dimag-connected-channels');
+  if (!saved) return [];
+  try {
+    const channels: unknown = JSON.parse(saved);
+    if (Array.isArray(channels) && channels.every((item) =>
+      item && typeof item.channelId === 'string' &&
+      typeof item.channelTitle === 'string' &&
+      typeof item.thumbnailUrl === 'string'
+    )) {
+      return channels as Channel[];
+    }
+    console.warn('Saved YouTube channel list has an invalid format.');
+  } catch (reason) {
+    console.warn('Unable to parse the saved YouTube channel list:', reason);
+  }
+  return [];
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [channels, setChannels] = useState<Channel[]>([]);
+  const [channels, setChannels] = useState<Channel[]>(getSavedChannels);
   const [channelId, setChannelIdState] = useState(localStorage.getItem('dimag-selected-channel') || '');
   const [profile, setProfile] = useState<Profile | null>(null);
   const [brain, setBrain] = useState<Brain | null>(null);
@@ -102,6 +121,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         const { channels: connected } = await api<{ channels: Channel[] }>('/youtube/channels');
         setChannels(connected);
+        try {
+          localStorage.setItem('dimag-connected-channels', JSON.stringify(connected));
+        } catch (reason) {
+          console.warn('Unable to persist the YouTube channel list:', reason);
+        }
         const currentId = connected.some((item) => item.channelId === channelId) ? channelId : connected[0]?.channelId || '';
         if (currentId !== channelId) {
           setProfile(null);

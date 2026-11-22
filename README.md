@@ -24,6 +24,8 @@ OMES browser access uses `POST`, `GET`, and `DELETE /api/channels/omes/session` 
 
 Manual `POST /api/automation/publish/:channelId` requests remain `202 Accepted` while the normal pipeline runs in the background; the worker refuses to generate/upload when that channel has OMES enabled.
 
+The API limits other requests to 600 per client IP per 15 minutes. Health checks, cron-protected automation triggers, and `GET /api/youtube/channels` are exempt. The frontend coalesces duplicate channel-list requests, caches successful results for 30 seconds, and applies exponential backoff starting at 30 seconds after a 429 while retaining the last known list.
+
 `POST /api/automation/audit-analytics` is protected by the same secret and requires `{ "channelId": "..." }`. The dashboard's manual audit asks for that secret at run time; it is not embedded in the frontend bundle.
 
 `GET /api/analytics/:channelId` syncs channel totals and recent-video statistics from YouTube and stores them against that channel's profile and video logs. `POST /api/analytics/:channelId/audit` refreshes those statistics before running the protected learning audit. The Agent Brain listens for pipeline status events and polls `GET /api/automation/status/:channelId` every five seconds only while that channel is active.

@@ -8,11 +8,14 @@ import analyticsRoutes from './routes/analyticsRoutes.js';
 import channelRoutes from './routes/channelRoutes.js';
 import automationRoutes from './routes/automationRoutes.js';
 import { runScheduledTrigger } from './services/queueWorkerService.js';
+import { createApiRateLimiter } from './middleware/rateLimiter.js';
 
 const app = express();
 app.disable('x-powered-by');
+app.set('trust proxy', 1);
 app.use(createCorsMiddleware());
 app.use(express.json({ limit: '1mb' }));
+app.use(createApiRateLimiter());
 app.get('/api/health', (req, res) => {
   const connected = mongoose.connection.readyState === 1;
   res.status(connected ? 200 : 503).json({
