@@ -21,8 +21,8 @@ type AppContextValue = {
   isIosSafari: boolean;
   setChannelId: (id: string) => void;
   installPwa: () => Promise<void>;
-  refresh: () => Promise<void>;
-  syncAnalytics: () => Promise<Stats>;
+  refresh: (includeChannels?: boolean, force?: boolean) => Promise<void>;
+  syncAnalytics: (force?: boolean) => Promise<Stats>;
   updateSyncedStats: (channelId: string, stats: Stats) => void;
   saveProfile: (profile: Partial<Profile>) => Promise<void>;
   saveSchedule: (schedule: Pick<Profile, 'autoPublishEnabled' | 'publishTimeIst'>) => Promise<Profile>;
@@ -57,7 +57,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [brain, setBrain] = useState<Brain | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
-  const refreshInFlight = useRef<Promise<void> | null>(null);
+  const refreshInFlight = useRef(new Map<string, Promise<void>>());
+  const channelIdRef = useRef(channelId);
+  const lastAnalyticsSyncChannel = useRef('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
@@ -105,6 +107,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setChannelId = (id: string) => {
     localStorage.setItem('dimag-selected-channel', id);
+    channelIdRef.current = id;
     if (id !== channelId) {
       setProfile(null);
       setBrain(null);
@@ -113,26 +116,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setChannelIdState(id);
   };
 
-  const refresh = useCallback(() => {
-    if (refreshInFlight.current) return refreshInFlight.current;
+  const refresh = useCallback((includeChannels = true, force = false) => {
+    const requestKey = `${channelId}:${includeChannels}`;
+    const inFlight = refreshInFlight.current.get(requestKey);
+    if (inFlight) return inFlight;
     const request = (async () => {
       setLoading(true);
       setError('');
+      let currentId = channelId;
       try {
-        const { channels: connected } = await api<{ channels: Channel[] }>('/youtube/channels');
-        setChannels(connected);
-        try {
-          localStorage.setItem('dimag-connected-channels', JSON.stringify(connected));
-        } catch (reason) {
-          console.warn('Unable to persist the YouTube channel list:', reason);
-        }
-        const currentId = connected.some((item) => item.channelId === channelId) ? channelId : connected[0]?.channelId || '';
-        if (currentId !== channelId) {
-          setProfile(null);
-          setBrain(null);
-          setStats(null);
-          localStorage.setItem('dimag-selected-channel', currentId);
-          setChannelIdState(currentId);
+        if (includeChannels) {
+          const { channels: connected } = await api<{ channels: Channel[] }>(
+            '/youtube/channels',
+            undefined,
+            { forceRefresh: force }
+          );
+          setChannels(connected);
+          try {
+            localStorage.setItem('dimag-connected-channels', JSON.stringify(connected));
+          } catch (reason) {
+            console.warn('Unable to persist the YouTube channel list:', reason);
+          }
+          currentId = connected.some((item) => item.channelId === channelIdRef.current)
+            ? channelIdRef.current
+            : connected[0]?.channelId || '';
+          if (currentId !== channelIdRef.current) {
+            setProfile(null);
+            setBrain(null);
+            setStats(null);
+            localStorage.setItem('dimag-selected-channel', currentId);
+            channelIdRef.current = currentId;
+            setChannelIdState(currentId);
+          }
         }
         if (!currentId) {
           setProfile(null); setBrain(null); setStats(null);
@@ -143,6 +158,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           api<{ brain: Brain }>(`/brain/${encodeURIComponent(currentId)}`),
           api<Stats>(`/youtube/stats/${encodeURIComponent(currentId)}`)
         ]);
+        if (currentId !== channelIdRef.current) return;
         const [profileResult, brainResult, statsResult] = results;
         if (profileResult.status === 'fulfilled') setProfile(profileResult.value.profile);
         if (brainResult.status === 'fulfilled') setBrain(brainResult.value.brain);
@@ -152,29 +168,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
           throw failure.reason;
         }
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : 'Unable to load channel data.');
-      } finally { setLoading(false); }
+        if (currentId === channelIdRef.current) {
+          setError(reason instanceof Error ? reason.message : 'Unable to load channel data.');
+        }
+      } finally {
+        if (currentId === channelIdRef.current) setLoading(false);
+      }
     })();
-    refreshInFlight.current = request;
+    refreshInFlight.current.set(requestKey, request);
     void request.finally(() => {
-      if (refreshInFlight.current === request) refreshInFlight.current = null;
+      if (refreshInFlight.current.get(requestKey) === request) refreshInFlight.current.delete(requestKey);
     });
     return request;
   }, [channelId]);
 
-  const syncAnalytics = useCallback(async () => {
+  const syncAnalytics = useCallback(async (force = false) => {
     if (!channelId) throw new Error('Connect and select a YouTube channel first.');
     const requestedChannelId = channelId;
-    const result = await api<Stats>(`/analytics/${encodeURIComponent(requestedChannelId)}`);
-    if (requestedChannelId === channelId) setStats(result);
+    const result = await api<Stats>(
+      `/analytics/${encodeURIComponent(requestedChannelId)}`,
+      undefined,
+      { forceRefresh: force }
+    );
+    if (requestedChannelId === channelIdRef.current) setStats(result);
     return result;
   }, [channelId]);
 
   const updateSyncedStats = useCallback((requestedChannelId: string, result: Stats) => {
-    if (requestedChannelId === channelId) setStats(result);
-  }, [channelId]);
+    if (requestedChannelId === channelIdRef.current) setStats(result);
+  }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    const noCachedStats = !stats || (
+      stats.kpis.views === 0 && stats.kpis.subscribers === 0 &&
+      stats.kpis.videos === 0 && stats.kpis.watchTimeMinutes === 0 &&
+      stats.recentVideos.length === 0
+    );
+    if (loading || !channelId || !noCachedStats || lastAnalyticsSyncChannel.current === channelId) return;
+    lastAnalyticsSyncChannel.current = channelId;
+    syncAnalytics().catch((reason: unknown) => {
+      setNotice(reason instanceof Error ? reason.message : 'Could not sync channel analytics.');
+    });
+  }, [channelId, loading, stats, syncAnalytics]);
 
   const saveProfile = useCallback(async (partial: Partial<Profile>) => {
     if (!channelId) throw new Error('Connect and select a YouTube channel first.');

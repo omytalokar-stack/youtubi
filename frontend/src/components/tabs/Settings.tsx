@@ -107,7 +107,7 @@ export function Settings() {
         body: JSON.stringify({ enabled: omesEnabled, frequency: omesFrequency, publishTimeIst: omesTimeIst })
       });
       setNotice('OMES settings saved for this channel.');
-      await refresh();
+      await refresh(false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not save OMES settings.');
     } finally { setSavingOmes(false); }
@@ -159,7 +159,7 @@ export function Settings() {
         ? response.result.reason || 'OMES did not change a video.'
         : 'Latest video metadata optimized and published publicly.');
       await loadOmesHistory();
-      await refresh();
+      await refresh(false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not run OMES.');
     } finally { setRunningOmes(false); }
@@ -182,7 +182,7 @@ export function Settings() {
   }
 
   return <div className="page-stack">
-    <div className="page-heading-row"><div><div className="eyebrow"><span className="eyebrow-line" /> PREFERENCES & ACCESS</div><h1>Studio settings<span className="heading-period">.</span></h1><p className="page-subtitle">Manage the channel connections and infrastructure behind your creator studio.</p></div><button className="button button-secondary" onClick={() => void refresh()}>Refresh connections</button></div>
+    <div className="page-heading-row"><div><div className="eyebrow"><span className="eyebrow-line" /> PREFERENCES & ACCESS</div><h1>Studio settings<span className="heading-period">.</span></h1><p className="page-subtitle">Manage the channel connections and infrastructure behind your creator studio.</p></div><button className="button button-secondary" onClick={() => void refresh(true, true)}>Refresh connections</button></div>
     <div className="settings-layout">
       <section className="panel settings-panel install-panel"><div className="section-heading"><div><span className="section-kicker">DIMAG FOR YOUR DEVICE</span><h2>Install Mobile App (PWA)</h2></div><Smartphone className="setting-icon" size={19} /></div><p className="settings-copy">Add dimag to your home screen for a fast, app-like experience on this device.</p>
         {isPwaInstalled ? <span className="installed-badge" role="status"><Check size={14} /> Installed on this device</span> : isIosSafari ? <div className="ios-install-guide"><strong><Share2 size={15} /> Add dimag to your Home Screen</strong><ol><li>Tap the Share button in Safari.</li><li>Choose <strong>Add to Home Screen</strong>.</li><li>Tap <strong>Add</strong> to finish.</li></ol></div> : canInstallPwa ? <button className="button button-primary install-button" onClick={() => void requestInstall()}><Download size={16} /> Install dimag App</button> : <p className="install-unavailable">Installation will be available from your browser when this device supports it.</p>}

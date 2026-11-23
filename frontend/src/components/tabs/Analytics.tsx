@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { ArrowDownRight, ArrowUpRight, Clock3, Eye, Heart, LoaderCircle, Play, Users, Video } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowDownRight, ArrowUpRight, Clock3, Eye, Heart, LoaderCircle, Play, RefreshCw, Users, Video } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useApp } from '../../context/AppContext';
 import { Modal } from '../Modal';
@@ -8,24 +8,24 @@ import type { Stats } from '../../types';
 const number = (value: number) => new Intl.NumberFormat('en', { notation: value > 999999 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
 
 export function Analytics() {
-  const { channelId, stats, loading, syncAnalytics, updateSyncedStats, setNotice } = useApp();
+  const { channelId, stats, syncAnalytics, updateSyncedStats, setNotice } = useApp();
+  const [refreshing, setRefreshing] = useState(false);
   const [auditing, setAuditing] = useState(false);
   const [audit, setAudit] = useState<{ winningTactic: string; mistakeRule: string } | null>(null);
   const [auditAuthOpen, setAuditAuthOpen] = useState(false);
   const [cronSecret, setCronSecret] = useState('');
-  const attemptedSync = useRef(new Set<string>());
-  useEffect(() => {
-    const noCachedStats = !stats || (
-      stats.kpis.views === 0 && stats.kpis.subscribers === 0 &&
-      stats.kpis.videos === 0 && stats.kpis.watchTimeMinutes === 0 &&
-      stats.recentVideos.length === 0
-    );
-    if (loading || !channelId || !noCachedStats || attemptedSync.current.has(channelId)) return;
-    attemptedSync.current.add(channelId);
-    syncAnalytics().catch((error: unknown) => {
-      setNotice(error instanceof Error ? error.message : 'Could not sync channel analytics.');
-    });
-  }, [channelId, loading, setNotice, stats, syncAnalytics]);
+
+  async function refreshAnalytics() {
+    setRefreshing(true);
+    try {
+      await syncAnalytics(true);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Could not refresh channel analytics.');
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   const metrics = [
     { label: 'Total views', value: number(stats?.kpis.views || 0), icon: Eye, period: 'LIFETIME', change: 'Lifetime', positive: true },
     { label: 'Subscribers', value: number(stats?.kpis.subscribers || 0), icon: Users, period: 'CURRENT', change: 'Current audience', positive: true },
@@ -58,7 +58,10 @@ export function Analytics() {
   return <div className="page-stack">
     <div className="page-heading-row">
       <div><div className="eyebrow"><span className="eyebrow-line" /> CHANNEL OVERVIEW</div><h1>Good morning, creator<span className="heading-period">.</span></h1><p className="page-subtitle">A clear view of your channel’s momentum and what to do next.</p></div>
-      <button className="button button-secondary" onClick={() => setAuditAuthOpen(true)} disabled={auditing || !channelId}>{auditing ? <LoaderCircle className="spin" size={16} /> : <Play size={15} fill="currentColor" />} Run Auto-Audit Now</button>
+      <div className="page-heading-actions">
+        <button className="button button-secondary" onClick={() => void refreshAnalytics()} disabled={refreshing || !channelId}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={15} />} Refresh analytics</button>
+        <button className="button button-secondary" onClick={() => setAuditAuthOpen(true)} disabled={auditing || !channelId}>{auditing ? <LoaderCircle className="spin" size={16} /> : <Play size={15} fill="currentColor" />} Run Auto-Audit Now</button>
+      </div>
     </div>
     <div className="metric-grid">
       {metrics.map(({ label, value, icon: Icon, period, change, positive }, index) => <article className={`metric-card metric-${index + 1}`} key={label}>

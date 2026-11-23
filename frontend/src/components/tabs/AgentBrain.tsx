@@ -64,7 +64,7 @@ export function AgentBrain() {
         method: 'PATCH', body: JSON.stringify({ selfCorrectionEnabled: !brain.selfCorrectionEnabled })
       });
       setNotice(data.brain.selfCorrectionEnabled ? 'Self-correction enabled.' : 'Self-correction paused.');
-      await refresh();
+      await refresh(false);
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not update self-correction.'); }
     finally { setBusy(false); }
   }
@@ -74,7 +74,7 @@ export function AgentBrain() {
     setBusy(true);
     try {
       await api<{ brain: Brain }>(`/brain/${itemType}`, { method: 'POST', body: JSON.stringify({ channelId, text: itemText.trim() }) });
-      setItemType(null); setItemText(''); await refresh();
+      setItemType(null); setItemText(''); await refresh(false);
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not update brain memory.'); }
     finally { setBusy(false); }
   }
