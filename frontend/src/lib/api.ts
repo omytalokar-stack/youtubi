@@ -6,11 +6,19 @@ const CHANNEL_LIST_PATH = '/youtube/channels';
 const CHANNEL_LIST_CACHE_TTL_MS = 30_000;
 const CHANNEL_LIST_BACKOFF_BASE_MS = 30_000;
 const CHANNEL_LIST_BACKOFF_MAX_MS = 15 * 60_000;
+const ANALYTICS_PATH = '/analytics';
+const ANALYTICS_CACHE_TTL_MS = 60_000;
 
 let channelListCache: { value: unknown; expiresAt: number } | null = null;
 let channelListInFlight: Promise<unknown> | null = null;
 let channelListRetryAt = 0;
 let channelListRateLimitCount = 0;
+const analyticsCache = new Map<string, { value: unknown; expiresAt: number }>();
+const analyticsInFlight = new Map<string, Promise<unknown>>();
+
+function isAnalyticsPath(path: string): boolean {
+  return path === ANALYTICS_PATH || path.startsWith(`${ANALYTICS_PATH}/`);
+}
 
 function getErrorMessage(body: unknown, status: number): string {
   if (body && typeof body === 'object') {
@@ -87,10 +95,39 @@ async function requestChannelList<T>(path: string, init?: RequestInit): Promise<
   }
 }
 
+async function requestAnalytics<T>(path: string, init?: RequestInit): Promise<T> {
+  const now = Date.now();
+  const cached = analyticsCache.get(path);
+  if (cached && now < cached.expiresAt) return cached.value as T;
+  const inFlight = analyticsInFlight.get(path);
+  if (inFlight) return inFlight as Promise<T>;
+
+  const request = (async () => {
+    const response = await fetch(`${API_URL}${path}`, {
+      ...init,
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', ...init?.headers }
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(getErrorMessage(body, response.status));
+    analyticsCache.set(path, { value: body, expiresAt: Date.now() + ANALYTICS_CACHE_TTL_MS });
+    return body as T;
+  })();
+  analyticsInFlight.set(path, request);
+  try {
+    return await request;
+  } finally {
+    if (analyticsInFlight.get(path) === request) analyticsInFlight.delete(path);
+  }
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method || 'GET').toUpperCase();
   if (method === 'GET' && path === CHANNEL_LIST_PATH) {
     return requestChannelList<T>(path, init);
+  }
+  if (method === 'GET' && isAnalyticsPath(path)) {
+    return requestAnalytics<T>(path, init);
   }
 
   const response = await fetch(`${API_URL}${path}`, {

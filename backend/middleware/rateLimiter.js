@@ -4,6 +4,26 @@ const EXEMPT_PATHS = new Set([
   '/api/health',
   '/api/automation/trigger'
 ]);
+const UNLIMITED_DASHBOARD_GET_PATHS = [
+  '/api/analytics',
+  '/api/dna',
+  '/api/agent',
+  '/api/settings',
+  '/api/youtube/stats',
+  '/api/profile',
+  '/api/brain',
+  '/api/automation/status',
+  '/api/automation/events',
+  '/api/channels/omes'
+];
+
+function isUnthrottledDashboardGet(req) {
+  if (req.method !== 'GET') return false;
+  if (req.path === '/api/youtube/channels') return true;
+  return UNLIMITED_DASHBOARD_GET_PATHS.some((path) =>
+    req.path === path || req.path.startsWith(`${path}/`)
+  );
+}
 
 export function createApiRateLimiter({
   windowMs = DEFAULT_WINDOW_MS,
@@ -21,8 +41,7 @@ export function createApiRateLimiter({
 
   return function apiRateLimiter(req, res, next) {
     if (!req.path.startsWith('/api/')) return next();
-    if (EXEMPT_PATHS.has(req.path) ||
-        (req.method === 'GET' && req.path === '/api/youtube/channels')) {
+    if (EXEMPT_PATHS.has(req.path) || isUnthrottledDashboardGet(req)) {
       return next();
     }
 
