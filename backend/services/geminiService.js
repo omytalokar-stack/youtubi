@@ -263,9 +263,13 @@ Correction required: The previous response was not valid JSON. Return a complete
     if (correction === MAX_DRAFT_CORRECTIONS) {
       throw new Error(`Generated Short failed validation after ${MAX_DRAFT_CORRECTIONS} corrections: ${issue}.`);
     }
+    const rejectedTitles = /similar to a recent video/i.test(issue)
+      ? [result.title, result.topic].filter(Boolean)
+      : [];
     correctionPrompt = `${prompt}
 
 Correction required: ${issue}. Rewrite the complete JSON to satisfy every requested script, hook, loop, topic-uniqueness, scene-query, and alignment constraint. Target 62 words and keep subtitleBeats and scenes aligned exactly to the rewritten script.
+${rejectedTitles.length ? `Do not reuse these rejected title or topic strings: ${JSON.stringify(rejectedTitles)}.` : ''}
 Previous JSON: ${JSON.stringify(result)}`;
   }
   throw new Error('Unable to generate a valid Short draft.');
@@ -296,8 +300,12 @@ Keep the middle sentences crisp and specific, revealing a new detail or question
 Return exactly 8 chronological scenes. Every scenes[i].sentence must exactly match subtitleBeats[i]. Every scene must include a concise visualQuery tailored to that sentence and the channel visual search prefix "${profile.visualKeywordsPrefix || ''}". All eight visualQuery values must be different and describe the actual subject/action in that specific sentence; do not repeat or lightly rephrase a query. Also include action, motion, camera, and lighting strings for distinct 9:16 scene direction.
 subtitleBeats must contain exactly 8 spoken sentences, 6-10 words each, and together reproduce script exactly, in order, without adding or omitting words. The renderer will display each beat as fast 2-3 word captions.
 tags must be an array of strings and include these core tags: ${(blueprint.coreTags || []).join(', ')}.
-Append this locked suffix to the title: ${blueprint.titleSuffix || '(none)'}.
-Append this locked footer to the description: ${blueprint.fixedDescriptionFooter || '(none)'}.
+${blueprint.titleSuffix
+    ? `Append this locked suffix to the title exactly: ${JSON.stringify(blueprint.titleSuffix)}.`
+    : 'There is no locked title suffix; do not add one.'}
+${blueprint.fixedDescriptionFooter
+    ? `Append this locked footer to the description exactly: ${JSON.stringify(blueprint.fixedDescriptionFooter)}.`
+    : 'There is no locked description footer; do not add one.'}
 Winning tactics: ${tactics}. Mistake rules: ${rules}.
 Channel winning blueprint: ${winningBlueprint || 'Not learned yet'}.
 Historical performance scorecard (winners and underperformers): ${JSON.stringify(scorecard)}.

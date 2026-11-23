@@ -70,6 +70,9 @@ test('sanitizes YouTube tags and keeps their combined length under 450 character
 
   assert.deepEqual(tags, ['Shorts', 'Coffee garden', 'y'.repeat(30)]);
   assert.ok(tagLength < 450);
+  assert.deepEqual(sanitizeYoutubeTags(['A😀B', '#हिन्दी!!', 'under_score']), [
+    'A B', 'हिन्दी', 'under score'
+  ]);
   assert.deepEqual(buildShortUploadRequest({
     title: 'Title',
     description: 'Description',
@@ -242,6 +245,36 @@ test('loads uploads playlist video metadata including private visibility and aud
   });
 });
 
+test('loads both private and unlisted items from the authenticated uploads playlist', async () => {
+  const history = await getChannelVideosHistory('UCchannel', 2, {
+    getAuth: async (_channelId, scope) => {
+      assert.match(scope, /youtube\.force-ssl$/);
+      return 'owner-auth';
+    },
+    makeYouTube: () => ({
+      channels: { list: async () => ({
+        data: { items: [{ contentDetails: { relatedPlaylists: { uploads: 'uploads-id' } } }] }
+      }) },
+      playlistItems: { list: async (params) => {
+        assert.equal(params.playlistId, 'uploads-id');
+        return { data: { items: [
+          { contentDetails: { videoId: 'private-video' } },
+          { contentDetails: { videoId: 'unlisted-video' } }
+        ] } };
+      } },
+      videos: { list: async (params) => {
+        assert.deepEqual(params.id, ['private-video', 'unlisted-video']);
+        return { data: { items: [
+          { id: 'private-video', status: { privacyStatus: 'private' } },
+          { id: 'unlisted-video', status: { privacyStatus: 'unlisted' } }
+        ] } };
+      } }
+    })
+  });
+
+  assert.deepEqual(history.map((video) => video.privacyStatus), ['private', 'unlisted']);
+});
+
 test('extracts an available owner caption track and downloads the thumbnail image context', async () => {
   const calls = [];
   const context = await fetchOmesVideoContext('UCchannel', {
@@ -309,6 +342,27 @@ test('continues with thumbnail context when the caption track is still syncing',
   });
 
   assert.equal(downloaded, false);
+  assert.equal(context.transcript, '');
+  assert.equal(context.thumbnail.mimeType, 'image/jpeg');
+});
+
+test('continues with thumbnail context when YouTube reports that captions are processing', async () => {
+  const context = await fetchOmesVideoContext('UCchannel', {
+    videoId: 'private-video',
+    privacyStatus: 'private',
+    thumbnailUrl: 'https://i.ytimg.com/vi/private-video/hqdefault.jpg'
+  }, {
+    getAuth: async () => 'auth',
+    makeYouTube: () => ({
+      captions: {
+        list: async () => {
+          throw Object.assign(new Error('Caption track is still processing.'), { code: 409 });
+        }
+      }
+    }),
+    fetchImage: async () => makeThumbnailResponse()
+  });
+
   assert.equal(context.transcript, '');
   assert.equal(context.thumbnail.mimeType, 'image/jpeg');
 });
@@ -441,4 +495,37 @@ test('optimizes and records audit details for the latest uploaded video', async 
   assert.equal(auditRecords[0].privacyAfter, 'public');
   assert.equal(profileWrites[0].videoId, 'video-2');
   assert.equal(videoWrites[0].metadata.tags.length, 2);
+});
+
+test('does not let lastOptimizedVideoId suppress a private or unlisted latest video', async () => {
+  let generated = false;
+  let updated = false;
+  let savedVideoId;
+  const result = await optimizeAndPublishLatestVideo('UCchannel', {
+    findProfile: async () => ({ automation: { omes: { lastOptimizedVideoId: 'video-1' } } }),
+    acquireLock: async () => true,
+    releaseLock: async () => {},
+    fetchHistory: async () => [{
+      videoId: 'video-1',
+      title: 'Private draft',
+      description: 'Draft description',
+      tags: ['draft'],
+      privacyStatus: 'unlisted'
+    }],
+    fetchVideoContext: async () => ({ transcript: '', thumbnail: null }),
+    generateMetadata: async () => {
+      generated = true;
+      return { title: 'Optimized draft', description: 'Updated description', tags: ['updated'] };
+    },
+    updateVideo: async () => { updated = true; },
+    saveProfile: async (_runAt, videoId) => { savedVideoId = videoId; },
+    saveAudit: async () => {},
+    saveVideoLog: async () => {},
+    pruneLogs: async () => {}
+  });
+
+  assert.equal(result.skipped, false);
+  assert.equal(generated, true);
+  assert.equal(updated, true);
+  assert.equal(savedVideoId, 'video-1');
 });

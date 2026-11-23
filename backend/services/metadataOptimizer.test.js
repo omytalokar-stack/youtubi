@@ -24,7 +24,7 @@ test('preserves the channel title suffix and description footer within YouTube l
   assert.deepEqual(metadata.tags, ['my channel', 'science', 'shorts']);
 });
 
-test('counts YouTube tag quotes and separators when applying the 500-character limit', () => {
+test('counts YouTube tag quotes and separators when applying the 450-character limit', () => {
   const tags = [
     'early morning devotional lofi',
     'peaceful bhajan lofi',
@@ -59,9 +59,22 @@ test('counts YouTube tag quotes and separators when applying the 500-character l
   const youtubeLength = metadata.tags.reduce((length, tag) =>
     length + tag.length + (tag.includes(' ') ? 2 : 0), 0) + metadata.tags.length - 1;
 
-  assert.ok(youtubeLength <= 500);
+  assert.ok(youtubeLength < 450);
   assert.ok(metadata.tags.length < tags.length);
   assert.equal(metadata.tags[0], tags[0]);
+});
+
+test('removes hashtags and unsupported characters while keeping OMES tags below 450 characters', () => {
+  const metadata = normalizeOmesMetadata({
+    title: 'Title',
+    description: 'Description',
+    tags: ['#Shorts😀', '<Coffee> "garden"', 'under_score', 'x'.repeat(449)]
+  });
+
+  assert.deepEqual(metadata.tags, ['Shorts', 'Coffee garden', 'under score']);
+  const youtubeLength = metadata.tags.reduce((length, tag) =>
+    length + Array.from(tag).length + (tag.includes(' ') ? 2 : 0), 0) + metadata.tags.length - 1;
+  assert.ok(youtubeLength < 450);
 });
 
 test('keeps required channel tags and rejects an impossible footer or title suffix', () => {
@@ -133,7 +146,7 @@ test('retries duplicate and heavily overlapping titles while preserving the meta
   assert.ok(metadata.title.endsWith(suffix));
   assert.equal(metadata.description, `A distinct video body.\n\n${footer}`);
   assert.ok(metadata.tags.includes('my channel'));
-  assert.ok(metadata.tags.includes('new-topic'));
+  assert.ok(metadata.tags.includes('new topic'));
 });
 
 test('rejects a title if all three generations collide with a recent main title', async () => {

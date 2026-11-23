@@ -162,7 +162,10 @@ function hasScheduledRunForDate(profile, current, mode) {
 
 function canResumeScheduledRun(profile, now = new Date()) {
   const run = profile.automation?.lastRun;
-  if (!run || !['queued', 'running'].includes(run.status) || run.source !== 'scheduled') return false;
+  const retryingPreviousFailure = run?.status === 'failed' &&
+    isTransientScheduledError({ message: run.reason });
+  if (!run || (!['queued', 'running'].includes(run.status) && !retryingPreviousFailure) ||
+      run.source !== 'scheduled') return false;
   if (run.nextAttemptAt && new Date(run.nextAttemptAt) > now) return false;
   if (run.mode === 'omes') {
     return profile.automation?.omes?.enabled === true &&
@@ -203,14 +206,18 @@ export async function prepareScheduledRun({ now = new Date(), recordRun = saveSc
   const queuedProfiles = [];
   for (const profile of dueProfiles) {
     const previous = profile.automation?.lastRun;
-    const resuming = canResumeScheduledRun(profile);
+    const resuming = canResumeScheduledRun(profile, now);
     const run = {
       status: 'queued',
       source: 'scheduled',
       mode: profile.automation?.omes?.enabled === true ? 'omes' : 'auto-upload',
       stage: 'queued',
       failedAtStage: '',
-      reason: resuming ? 'Retrying an interrupted scheduled run.' : '',
+      reason: resuming
+        ? previous.status === 'failed'
+          ? `Retrying a previously failed scheduled run: ${previous.reason}`
+          : 'Retrying an interrupted scheduled run.'
+        : '',
       title: resuming ? previous.title || '' : '',
       videoId: resuming ? previous.videoId || '' : '',
       scheduledDateIst: resuming ? previous.scheduledDateIst : current.todayIst,
@@ -418,9 +425,9 @@ async function saveRunStatusSafely(recordRun, channelId, run, phase) {
 
 function isTransientScheduledError(error) {
   const status = Number(error?.status ?? error?.response?.status ?? error?.code);
-  const message = `${error?.message || ''} ${error?.code || ''}`.toLowerCase();
+  const message = `${typeof error === 'string' ? error : error?.message || ''} ${error?.code || ''}`.toLowerCase();
   return [429, 500, 502, 503, 504].includes(status) ||
-    /resource_exhausted|quota|rate limit|temporarily unavailable|timeout|timed out|econnreset|etimedout|socket hang up/.test(message);
+    /resource_exhausted|quota|rate limit|retryable http error|temporarily unavailable|timeout|timed out|econnreset|etimedout|socket hang up|no audio|incomplete channel performance analysis|invalid video keywords|generated short failed validation/.test(message);
 }
 
 async function runScheduledTriggerOnce({

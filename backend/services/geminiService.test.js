@@ -183,7 +183,11 @@ test('regenerates a topic that overlaps a recent upload before accepting a new i
   const result = await generateScriptDraft(
     'Create a Short.',
     async (prompt) => {
-      if (calls > 0) assert.match(prompt, /too similar to a recent video/);
+      if (calls > 0) {
+        assert.match(prompt, /too similar to a recent video/);
+        assert.match(prompt, /Do not reuse these rejected title or topic strings/);
+        assert.match(prompt, /A coffee mug garden/);
+      }
       return JSON.stringify(calls++ === 0 ? repeated : fresh);
     },
     (candidate) => validateCreativeDraft(candidate, history)

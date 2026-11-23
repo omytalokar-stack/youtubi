@@ -2,7 +2,7 @@ import { createGeminiClient, GEMINI_TEXT_MODELS, withGeminiModels } from './gemi
 
 const TITLE_LIMIT = 100;
 const DESCRIPTION_LIMIT = 5000;
-const TAGS_LIMIT = 500;
+const TAGS_LIMIT = 450;
 const MAX_METADATA_ATTEMPTS = 3;
 
 function parseJson(text) {
@@ -45,23 +45,32 @@ function fitDescription(description, footer) {
 
 function getYoutubeTagsLength(tags) {
   const tagCharacters = tags.reduce((length, tag) =>
-    length + tag.length + (tag.includes(' ') ? 2 : 0), 0);
+    length + Array.from(tag).length + (tag.includes(' ') ? 2 : 0), 0);
   return tagCharacters + Math.max(0, tags.length - 1);
+}
+
+function sanitizeTag(tag) {
+  return String(tag || '')
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function fitTags(tags, requiredTags = []) {
   if (!Array.isArray(tags)) throw new Error('Gemini returned tags in an invalid format.');
   const unique = new Map();
+  const requiredKeys = new Set(requiredTags.map((tag) => sanitizeTag(tag).toLocaleLowerCase()).filter(Boolean));
   for (const tag of [...requiredTags, ...tags]) {
-    const value = String(tag || '').replace(/\s+/g, ' ').trim();
+    const value = sanitizeTag(tag);
     if (value) unique.set(value.toLocaleLowerCase(), value);
   }
   const result = [];
   for (const tag of unique.values()) {
     const candidate = [...result, tag];
-    if (getYoutubeTagsLength(candidate) > TAGS_LIMIT) {
-      if (requiredTags.some((required) => String(required).toLocaleLowerCase() === tag.toLocaleLowerCase())) {
-        throw new Error('The channel core tags exceed YouTube’s 500-character tag limit.');
+    if (getYoutubeTagsLength(candidate) >= TAGS_LIMIT) {
+      if (requiredKeys.has(tag.toLocaleLowerCase())) {
+        throw new Error('The channel core tags exceed YouTube’s 450-character tag limit.');
       }
       continue;
     }

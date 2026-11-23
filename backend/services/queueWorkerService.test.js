@@ -233,6 +233,107 @@ test('recovers persisted scheduled runs even after their original IST window has
   assert.match(persisted[0].run.reason, /interrupted/);
 });
 
+test('retries persisted retryable failures, including OMES, without requiring auto-upload', async (t) => {
+  const originalFind = ChannelProfile.find;
+  const currentDate = '2026-11-23';
+  const profiles = [
+    {
+      channelId: `UC${'t'.repeat(22)}`,
+      autoPublishEnabled: true,
+      publishTimeIst: '16:00',
+      lastAutoPublishedDateIst: '',
+      automation: {
+        omes: { enabled: false },
+        lastRun: {
+          status: 'failed',
+          source: 'scheduled',
+          mode: 'auto-upload',
+          scheduledDateIst: currentDate,
+          scheduledTimeIst: '16:00',
+          reason: 'Gemini TTS returned no audio after 3 attempts.',
+          retryCount: 0
+        }
+      }
+    },
+    {
+      channelId: `UC${'s'.repeat(22)}`,
+      autoPublishEnabled: true,
+      publishTimeIst: '16:00',
+      lastAutoPublishedDateIst: '',
+      automation: {
+        omes: { enabled: false },
+        lastRun: {
+          status: 'failed',
+          source: 'scheduled',
+          mode: 'auto-upload',
+          scheduledDateIst: currentDate,
+          scheduledTimeIst: '16:00',
+          reason: 'Generated Short failed validation after 3 corrections: every spoken sentence must contain 6-10 words.',
+          retryCount: 0
+        }
+      }
+    },
+    {
+      channelId: `UC${'o'.repeat(22)}`,
+      autoPublishEnabled: false,
+      automation: {
+        omes: {
+          enabled: true,
+          frequency: 'daily',
+          publishTimeIst: '23:30',
+          lastOmesRunAt: new Date('2026-11-22T18:00:00.000Z')
+        },
+        lastRun: {
+          status: 'failed',
+          source: 'scheduled',
+          mode: 'omes',
+          scheduledDateIst: currentDate,
+          scheduledTimeIst: '23:30',
+          reason: 'Retryable HTTP Error:',
+          retryCount: 0
+        }
+      }
+    },
+    {
+      channelId: `UC${'p'.repeat(22)}`,
+      autoPublishEnabled: true,
+      publishTimeIst: '16:00',
+      lastAutoPublishedDateIst: '',
+      automation: {
+        omes: { enabled: false },
+        lastRun: {
+          status: 'failed',
+          source: 'scheduled',
+          mode: 'auto-upload',
+          scheduledDateIst: currentDate,
+          scheduledTimeIst: '16:00',
+          reason: 'Permanent configuration error.',
+          retryCount: 0
+        }
+      }
+    }
+  ];
+  const saved = [];
+  ChannelProfile.find = () => ({ lean: async () => profiles });
+  t.after(() => { ChannelProfile.find = originalFind; });
+
+  const prepared = await prepareScheduledRun({
+    now: new Date('2026-11-23T18:06:00.000Z'),
+    recordRun: async (channelId, run) => saved.push({ channelId, run })
+  });
+
+  assert.deepEqual(prepared.dueProfiles.map((profile) => profile.channelId), [
+    profiles[1].channelId,
+    profiles[0].channelId,
+    profiles[2].channelId
+  ]);
+  assert.equal(prepared.dueProfiles[0].automation.lastRun.mode, 'auto-upload');
+  assert.equal(prepared.dueProfiles[1].automation.lastRun.mode, 'auto-upload');
+  assert.equal(prepared.dueProfiles[2].automation.lastRun.mode, 'omes');
+  assert.ok(saved.every(({ run }) => /previously failed/.test(run.reason)));
+  assert.ok(saved.every(({ run }) => run.scheduledDateIst === currentDate));
+});
+
 test('records automatic publication dates using only the matching channel ID', async (t) => {
   const originalUpdateOne = ChannelProfile.updateOne;
   const channelId = `UC${'z'.repeat(22)}`;
@@ -293,7 +394,7 @@ test('routes due OMES channels to optimization instead of native video generatio
   ChannelProfile.find = () => ({
     lean: async () => [{
       channelId,
-      autoPublishEnabled: true,
+      autoPublishEnabled: false,
       automation: {
         privacyStatus: 'private',
         omes: { enabled: true, frequency: 'daily', publishTimeIst: '11:00', lastOmesRunAt: null }

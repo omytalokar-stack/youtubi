@@ -464,7 +464,7 @@ async function readCaptionData(data) {
 function isCaptionNotReadyError(error) {
   const status = Number(error?.code || error?.response?.status);
   return status === 404 || status === 409 ||
-    /caption.{0,30}(not ready|not available|not found|processing)|(?:not ready|not available|processing).{0,30}caption/i
+    /caption.{0,30}(not ready|not available|not found|processing|syncing|pending)|(?:not ready|not available|processing|syncing|pending).{0,30}caption/i
       .test(String(error?.message || ''));
 }
 
@@ -545,7 +545,7 @@ export function hasCompletePublicMetadata(video) {
 
 function getYoutubeTagsLength(tags) {
   return tags.reduce((length, tag) =>
-    length + tag.length + (tag.includes(' ') ? 2 : 0), 0) + Math.max(0, tags.length - 1);
+    length + Array.from(tag).length + (tag.includes(' ') ? 2 : 0), 0) + Math.max(0, tags.length - 1);
 }
 
 export function sanitizeYoutubeTags(tags) {
@@ -555,7 +555,8 @@ export function sanitizeYoutubeTags(tags) {
   for (const rawTag of tags) {
     if (typeof rawTag !== 'string') continue;
     const tag = rawTag
-      .replace(/[^\p{L}\p{N}\s._-]/gu, ' ')
+      .normalize('NFKC')
+      .replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ')
       .replace(/\s+/g, ' ')
       .trim();
     const key = tag.toLocaleLowerCase();
