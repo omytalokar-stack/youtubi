@@ -4,8 +4,8 @@ import ChannelProfile from '../models/ChannelProfile.js';
 import YouTubeCredential from '../models/YouTubeCredential.js';
 import VideoLog from '../models/VideoLog.js';
 import {
-  buildShortUploadRequest, getCachedChannelStats, getChannelAuth, getChannelVideosHistory, hasCompletePublicMetadata,
-  optimizeAndPublishLatestVideo, persistChannelStats, updateChannelVideoMetadata
+  buildShortUploadRequest, fetchAnalyticsMetrics, getCachedChannelStats, getChannelAuth, getChannelVideosHistory, hasCompletePublicMetadata,
+  optimizeAndPublishLatestVideo, persistChannelStats, sanitizeYoutubeTags, updateChannelVideoMetadata
 } from './youtubeService.js';
 
 test('builds dashboard statistics from saved channel and video records', async (t) => {
@@ -42,6 +42,54 @@ test('builds dashboard statistics from saved channel and video records', async (
       views: 50, likes: 3, watchTimeMinutes: 15, impressions: 120, ctr: 4.5,
       averageViewDuration: 18, retention: 72
     }]
+  });
+});
+
+test('sanitizes YouTube tags and keeps their combined length under 450 characters', () => {
+  const tags = sanitizeYoutubeTags([
+    '#Shorts😀',
+    '<Coffee> "garden"',
+    'shorts',
+    'x'.repeat(430),
+    'y'.repeat(30),
+    '',
+    42
+  ]);
+  const tagLength = tags.reduce((length, tag) =>
+    length + tag.length + (tag.includes(' ') ? 2 : 0), 0) + Math.max(0, tags.length - 1);
+
+  assert.deepEqual(tags, ['Shorts', 'Coffee garden', 'y'.repeat(30)]);
+  assert.ok(tagLength < 450);
+  assert.deepEqual(buildShortUploadRequest({
+    title: 'Title',
+    description: 'Description',
+    tags: ['#Shorts😀', '<Coffee> "garden"']
+  }, 'private').requestBody.snippet.tags, ['Shorts', 'Coffee garden']);
+  const boundaryTags = sanitizeYoutubeTags(['a'.repeat(449), 'b']);
+  assert.deepEqual(boundaryTags, ['a'.repeat(449)]);
+});
+
+test('queries only supported per-video YouTube Analytics metrics', async () => {
+  const queries = [];
+  const metrics = await fetchAnalyticsMetrics('auth', 'UCchannel', ['video-1'], (options) => {
+    assert.deepEqual(options, { version: 'v2', auth: 'auth' });
+    return {
+      reports: {
+        query: async (params) => {
+          queries.push(params);
+          return { data: { rows: [['video-1', 18, 72, 15]] } };
+        }
+      }
+    };
+  });
+
+  assert.equal(queries.length, 1);
+  assert.equal(queries[0].metrics, 'averageViewDuration,averageViewPercentage,estimatedMinutesWatched');
+  assert.doesNotMatch(queries[0].metrics, /impressions|impressionClickThroughRate/);
+  assert.deepEqual(metrics.get('video-1'), {
+    averageViewDuration: 18,
+    retention: 72,
+    watchTimeMinutes: 15
   });
 });
 
@@ -190,7 +238,7 @@ test('updates metadata and publishes while preserving the existing made-for-kids
   }, {
     title: 'Optimized title',
     description: 'Optimized description',
-    tags: ['topic']
+    tags: ['#topic😀', '<quoted> "tag"']
   }, {
     getAuth: async (_channelId, scope) => {
       assert.match(scope, /youtube\.force-ssl$/);
@@ -203,7 +251,7 @@ test('updates metadata and publishes while preserving the existing made-for-kids
   assert.deepEqual(updateRequest.requestBody.snippet, {
     title: 'Optimized title',
     description: 'Optimized description',
-    tags: ['topic'],
+    tags: ['topic', 'quoted tag'],
     categoryId: '27'
   });
   assert.deepEqual(updateRequest.requestBody.status, {

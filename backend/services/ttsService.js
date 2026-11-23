@@ -6,25 +6,77 @@ import { FFMPEG_TIMEOUT_MS } from './renderService.js';
 import { withGeminiKey } from './geminiApiKeys.js';
 
 const execFileAsync = promisify(execFile);
+const MAX_TTS_ATTEMPTS = 3;
+const TTS_RETRY_BASE_MS = 500;
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export function sanitizeNarrationText(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/^\s*>+\s?/gm, '')
+    .replace(/^\s*[-+*]\s+/gm, '')
+    .replace(/[*_~`#|]/g, '')
+    .replace(/[^\p{L}\p{N}\s.,!?;:'’‘“”\-–—।॥]/gu, ' ')
+    .replace(/\s+([.,!?;:])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export async function generateTtsAudio(script, language, generateResponse, wait = delay) {
+  let narration = String(script || '');
+  let lastError;
+  for (let attempt = 0; attempt < MAX_TTS_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await generateResponse(narration, language);
+      const audioPart = response?.candidates
+        ?.flatMap((candidate) => candidate?.content?.parts || [])
+        .find((part) => typeof part?.inlineData?.data === 'string');
+      const data = audioPart ? Buffer.from(audioPart.inlineData.data, 'base64') : Buffer.alloc(0);
+      if (data.length) {
+        return {
+          data,
+          mimeType: audioPart.inlineData.mimeType || 'audio/L16;rate=24000'
+        };
+      }
+      lastError = new Error('Gemini TTS returned no audio.');
+      narration = sanitizeNarrationText(script);
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      const status = Number(error?.status ?? error?.response?.status);
+      if (/Configure at least one Gemini API key/.test(error?.message || '') ||
+          (status >= 400 && status < 500 && status !== 429)) {
+        throw error;
+      }
+      lastError = error;
+    }
+    if (attempt + 1 < MAX_TTS_ATTEMPTS) {
+      await wait(TTS_RETRY_BASE_MS * (2 ** attempt));
+    }
+  }
+  if (lastError?.message === 'Gemini TTS returned no audio.') {
+    throw new Error(`Gemini TTS returned no audio after ${MAX_TTS_ATTEMPTS} attempts.`);
+  }
+  throw lastError || new Error('Gemini TTS audio generation failed.');
+}
 
 export async function generateVoiceover(script, language, jobDir, signal) {
-  const response = await withGeminiKey(async (apiKey) => {
-    const ai = new GoogleGenAI({ apiKey });
-    return ai.models.generateContent({
-      model: process.env.GEMINI_TTS_MODEL || 'gemini-2.5-flash-preview-tts',
-      contents: [{ parts: [{ text: `Read this ${language} YouTube Short script clearly and expressively:\n${script}` }] }],
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
-      }
-    });
-  });
-  const audioPart = response.candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data);
-  if (!audioPart) throw new Error('Gemini TTS returned no audio.');
+  const { data, mimeType } = await generateTtsAudio(script, language, (narration, requestedLanguage) =>
+    withGeminiKey(async (apiKey) => {
+      const ai = new GoogleGenAI({ apiKey });
+      return ai.models.generateContent({
+        model: process.env.GEMINI_TTS_MODEL || 'gemini-2.5-flash-preview-tts',
+        contents: [{ parts: [{ text: `Read this ${requestedLanguage} YouTube Short script clearly and expressively:\n${narration}` }] }],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
+        }
+      });
+    }));
   const wav = path.join(jobDir, 'voiceover.wav');
   const mp3 = path.join(jobDir, 'voiceover.mp3');
-  const data = Buffer.from(audioPart.inlineData.data, 'base64');
-  const mimeType = audioPart.inlineData.mimeType || 'audio/L16;rate=24000';
   const rate = Number(mimeType.match(/rate=(\d+)/)?.[1] || 24000);
   const header = Buffer.alloc(44);
   header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4); header.write('WAVE', 8);

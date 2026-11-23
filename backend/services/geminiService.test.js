@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  buildRecentTopicPrompt,
   findSimilarRecentTopic,
   generateScriptDraft,
   normalizeScenePrompts,
@@ -57,16 +58,16 @@ test('regenerates an overlong Gemini script before rejecting it', async () => {
   assert.equal(calls, 2);
 });
 
-test('reports the final word count after three corrective generations', async () => {
+test('reports the final word count after five corrective generations', async () => {
   let calls = 0;
   await assert.rejects(
     generateScriptDraft('Create a Short.', async () => {
       calls += 1;
       return draft(Array(75).fill('word').join(' '));
     }),
-    /after 3 corrections: the script has 75 words/
+    /after 5 corrections: the script has 75 words/
   );
-  assert.equal(calls, 4);
+  assert.equal(calls, 6);
 });
 
 test('regenerates a malformed Gemini response instead of failing before correction', async () => {
@@ -137,6 +138,16 @@ test('rejects weak openings, broken loop endings, and repeated channel topics', 
   const history = [{ title: 'A coffee mug garden', topic: 'A seed grows inside a coffee mug' }];
   assert.match(validateCreativeDraft(validDraft(), history), /too similar to a recent video/);
   assert.match(findSimilarRecentTopic(validDraft(), history), /coffee mug garden/);
+});
+
+test('includes recent video titles and distinct subtopic guidance in the prompt', () => {
+  const prompt = buildRecentTopicPrompt([
+    { title: 'A coffee mug garden', topic: 'A seed grows inside a coffee mug' },
+    { title: 'The hidden desert coastline' }
+  ]);
+  assert.match(prompt, /Recent video titles to avoid/);
+  assert.match(prompt, /A coffee mug garden/);
+  assert.match(prompt, /completely distinct angle or subtopic/);
 });
 
 test('regenerates a topic that overlaps a recent upload before accepting a new idea', async () => {

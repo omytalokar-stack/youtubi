@@ -18,7 +18,7 @@ function normalizedWords(text) {
 }
 
 const SCENE_COUNT = 8;
-const MAX_DRAFT_CORRECTIONS = 3;
+const MAX_DRAFT_CORRECTIONS = 5;
 const TOPIC_STOP_WORDS = new Set([
   'about', 'after', 'again', 'also', 'been', 'before', 'being', 'could', 'from', 'have',
   'into', 'just', 'more', 'most', 'other', 'over', 'same', 'some', 'than', 'that',
@@ -59,6 +59,16 @@ export function findSimilarRecentTopic(result, recentVideos = []) {
     }
   }
   return '';
+}
+
+export function buildRecentTopicPrompt(recentVideos = []) {
+  const recentTitles = recentVideos.map((video) => video.title || '').filter(Boolean);
+  const recentTopics = recentVideos.map((video) => ({
+    title: video.title || '',
+    topic: video.topic || splitSentences(video.script)[0] || video.hook || video.title || '',
+    hook: video.hook || ''
+  }));
+  return `Recent video titles to avoid: ${JSON.stringify(recentTitles)}. Choose a completely distinct angle or subtopic, not just different wording. Do not reuse the same central fact, story, person, event, or takeaway. Compare against these recent topics and hooks: ${JSON.stringify(recentTopics)}.`;
 }
 
 function normalizedVisualQuery(query) {
@@ -277,15 +287,10 @@ export async function generateShort(channelId, { onWriting } = {}) {
   const scorecard = learningEnabled ? memory?.performanceScorecard || [] : [];
   const nextVideoStrategy = learningEnabled ? memory?.nextVideoStrategy : '';
   const blueprint = profile.metadataBlueprint || {};
-  const recentTopics = recentVideos.map((video) => ({
-    title: video.title || '',
-    topic: video.topic || splitSentences(video.script)[0] || video.hook || video.title || '',
-    hook: video.hook || ''
-  }));
   const prompt = `Return only valid JSON with keys hook,topic,title,script,loopEnding,description,tags,scenes,subtitleBeats.
 Create one YouTube Short for channel ${profile.channelTitle}. Niche: ${profile.niche}. Language: ${profile.language}.
 Tone: ${profile.toneAndStyle}. Channel visual search prefix: ${profile.visualKeywordsPrefix || '(none)'}.
-Create a fresh, specific topic that is not a duplicate or near-duplicate in meaning of any item in this strict do-not-repeat list: ${JSON.stringify(recentTopics)}. Compare the idea, not just its wording; do not reuse the same central fact, story, person, event, or takeaway. If your first idea overlaps, choose a different topic before writing.
+Create a fresh, specific topic that is not a duplicate or near-duplicate in meaning of any item in this strict do-not-repeat list. ${buildRecentTopicPrompt(recentVideos)} If your first idea overlaps, choose a different topic before writing.
 Write a natural 55-70 word spoken script (target 62; count words separated by spaces) as exactly 8 complete sentences, one per scene, with 6-10 words in every sentence. Timing: the spoken opening and on-screen hook land in 0-2 seconds; body beats run from about 3 seconds to the final 3 seconds; the loop-ending sentence belongs in those last 3 seconds. Design each scene for about 2.5-3 seconds. The first sentence must open in the middle of an action using a surprising contrast, a concrete number, or a strong curiosity gap. Make the separate on-screen hook a concise version of that opening. Do not begin the hook or script with "Doston aaj hum baat karenge", "Hello guys", or "Kya aap jaante hain" (including close variants).
 Keep the middle sentences crisp and specific, revealing a new detail or question with each beat. The final sentence is the seamless-loop ending: write it so its grammar and rhythm flow directly back into the opening sentence when the video restarts. Set loopEnding to that exact final sentence.
 Return exactly 8 chronological scenes. Every scenes[i].sentence must exactly match subtitleBeats[i]. Every scene must include a concise visualQuery tailored to that sentence and the channel visual search prefix "${profile.visualKeywordsPrefix || ''}". All eight visualQuery values must be different and describe the actual subject/action in that specific sentence; do not repeat or lightly rephrase a query. Also include action, motion, camera, and lighting strings for distinct 9:16 scene direction.

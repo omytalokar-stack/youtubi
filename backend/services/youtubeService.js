@@ -11,6 +11,7 @@ import { pruneChannelLogs } from './logCleanupService.js';
 
 const YOUTUBE_UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload';
 const YOUTUBE_EDIT_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
+const MAX_YOUTUBE_TAGS_LENGTH = 450;
 const OMES_LOCK_TTL_MS = 15 * 60 * 1000;
 
 function createOAuthClient() {
@@ -281,12 +282,11 @@ export async function persistChannelStats(channelId, stats) {
   }
 }
 
-async function fetchAnalyticsMetrics(auth, channelId, videoIds) {
-  const analytics = google.youtubeAnalytics({ version: 'v2', auth });
+export async function fetchAnalyticsMetrics(auth, channelId, videoIds, makeAnalytics = google.youtubeAnalytics) {
+  const analytics = makeAnalytics({ version: 'v2', auth });
   const endDate = new Date().toISOString().slice(0, 10);
   const startDate = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
   const reports = await Promise.all([
-    { metrics: 'impressions,impressionClickThroughRate', fields: ['impressions', 'ctr'] },
     { metrics: 'averageViewDuration,averageViewPercentage,estimatedMinutesWatched', fields: ['averageViewDuration', 'retention', 'watchTimeMinutes'] }
   ].map(async ({ metrics, fields }) => {
     try {
@@ -409,6 +409,31 @@ export function hasCompletePublicMetadata(video) {
     video.privacyStatus === 'public');
 }
 
+function getYoutubeTagsLength(tags) {
+  return tags.reduce((length, tag) =>
+    length + tag.length + (tag.includes(' ') ? 2 : 0), 0) + Math.max(0, tags.length - 1);
+}
+
+export function sanitizeYoutubeTags(tags) {
+  if (!Array.isArray(tags)) return [];
+  const sanitized = [];
+  const seen = new Set();
+  for (const rawTag of tags) {
+    if (typeof rawTag !== 'string') continue;
+    const tag = rawTag
+      .replace(/[^\p{L}\p{N}\s._-]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const key = tag.toLocaleLowerCase();
+    if (!tag || seen.has(key)) continue;
+    const candidate = [...sanitized, tag];
+    if (getYoutubeTagsLength(candidate) >= MAX_YOUTUBE_TAGS_LENGTH) continue;
+    sanitized.push(tag);
+    seen.add(key);
+  }
+  return sanitized;
+}
+
 export async function updateChannelVideoMetadata(channelId, video, metadata, dependencies = {}) {
   const getAuth = dependencies.getAuth || getChannelAuth;
   const makeYouTube = dependencies.makeYouTube || ((auth) => google.youtube({ version: 'v3', auth }));
@@ -425,7 +450,7 @@ export async function updateChannelVideoMetadata(channelId, video, metadata, dep
       snippet: {
         title: metadata.title,
         description: metadata.description,
-        tags: metadata.tags,
+        tags: sanitizeYoutubeTags(metadata.tags),
         categoryId: video.categoryId || '22',
         ...(video.defaultLanguage ? { defaultLanguage: video.defaultLanguage } : {}),
         ...(video.defaultAudioLanguage ? { defaultAudioLanguage: video.defaultAudioLanguage } : {})
@@ -558,7 +583,7 @@ export function buildShortUploadRequest(metadata, privacyStatus) {
       snippet: {
         title: metadata.title,
         description: metadata.description,
-        tags: metadata.tags,
+        tags: sanitizeYoutubeTags(metadata.tags),
         categoryId: '22'
       },
       status: { privacyStatus, selfDeclaredMadeForKids: false }
