@@ -13,6 +13,8 @@ const YOUTUBE_UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload';
 const YOUTUBE_EDIT_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
 const MAX_YOUTUBE_TAGS_LENGTH = 450;
 const OMES_LOCK_TTL_MS = 15 * 60 * 1000;
+const MAX_CAPTION_BYTES = 2 * 1024 * 1024;
+const MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024;
 
 function createOAuthClient() {
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI } = process.env;
@@ -386,6 +388,11 @@ export async function getChannelVideosHistory(channelId, maxResults = 25, depend
       title: video.snippet?.title || '',
       description: video.snippet?.description || '',
       tags: video.snippet?.tags || [],
+      thumbnailUrl: video.snippet?.thumbnails?.maxres?.url ||
+        video.snippet?.thumbnails?.high?.url ||
+        video.snippet?.thumbnails?.standard?.url ||
+        video.snippet?.thumbnails?.medium?.url ||
+        video.snippet?.thumbnails?.default?.url || '',
       categoryId: video.snippet?.categoryId || '',
       defaultLanguage: video.snippet?.defaultLanguage,
       defaultAudioLanguage: video.snippet?.defaultAudioLanguage,
@@ -399,6 +406,133 @@ export async function getChannelVideosHistory(channelId, maxResults = 25, depend
       likes: Number(video.statistics?.likeCount || 0)
     };
   }).filter(Boolean);
+}
+
+function parseCaptionText(captions) {
+  const lines = String(captions || '')
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      return trimmed &&
+        !/^WEBVTT(?:\s|$)/i.test(trimmed) &&
+        !/^NOTE(?:\s|$)/i.test(trimmed) &&
+        !/^\d+$/.test(trimmed) &&
+        !/^(?:\d{2}:)?\d{2}:\d{2}[.,]\d{3}\s+-->/.test(trimmed);
+    })
+    .map((line) => line
+      .replace(/<\d{2}:\d{2}:\d{2}[.,]\d{3}>/g, '')
+      .replace(/<\/?[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/\s+/g, ' ')
+      .trim())
+    .filter(Boolean);
+  return lines.filter((line, index) => line !== lines[index - 1]).join(' ').slice(0, 12000);
+}
+
+async function readCaptionData(data) {
+  if (typeof data === 'string') {
+    const buffer = Buffer.from(data);
+    if (buffer.length > MAX_CAPTION_BYTES) throw new Error('The YouTube caption track exceeds the allowed size.');
+    return buffer;
+  }
+  if (Buffer.isBuffer(data)) {
+    if (data.length > MAX_CAPTION_BYTES) throw new Error('The YouTube caption track exceeds the allowed size.');
+    return data;
+  }
+  if (data instanceof ArrayBuffer) {
+    if (data.byteLength > MAX_CAPTION_BYTES) throw new Error('The YouTube caption track exceeds the allowed size.');
+    return Buffer.from(data);
+  }
+  if (!data || typeof data[Symbol.asyncIterator] !== 'function') {
+    throw new Error('YouTube returned caption data in an unsupported format.');
+  }
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of data) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > MAX_CAPTION_BYTES) throw new Error('The YouTube caption track exceeds the allowed size.');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, bytes);
+}
+
+function isCaptionNotReadyError(error) {
+  const status = Number(error?.code || error?.response?.status);
+  return status === 404 || status === 409 ||
+    /caption.{0,30}(not ready|not available|not found|processing)|(?:not ready|not available|processing).{0,30}caption/i
+      .test(String(error?.message || ''));
+}
+
+async function fetchThumbnailImage(url, fetchImage = fetch) {
+  if (!url) return null;
+  const parsedUrl = new URL(url);
+  if (parsedUrl.protocol !== 'https:') throw new Error('The YouTube thumbnail URL must use HTTPS.');
+  const response = await fetchImage(url, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error(`Could not fetch the YouTube thumbnail (HTTP ${response.status}).`);
+  const contentLength = Number(response.headers?.get?.('content-length') || 0);
+  if (contentLength > MAX_THUMBNAIL_BYTES) throw new Error('The YouTube thumbnail exceeds the allowed size.');
+  const image = Buffer.from(await response.arrayBuffer());
+  if (!image.length || image.length > MAX_THUMBNAIL_BYTES) {
+    throw new Error('The YouTube thumbnail is empty or exceeds the allowed size.');
+  }
+  const mimeType = String(response.headers?.get?.('content-type') || 'image/jpeg').split(';')[0].trim();
+  if (!/^image\/(?:jpeg|png|webp)$/i.test(mimeType)) {
+    throw new Error(`Unsupported YouTube thumbnail content type: ${mimeType}.`);
+  }
+  return { mimeType, data: image.toString('base64') };
+}
+
+export async function fetchOmesVideoContext(channelId, video, dependencies = {}) {
+  const videoContext = { transcript: '', thumbnail: null };
+  if (!['private', 'unlisted'].includes(video.privacyStatus)) return videoContext;
+
+  const getAuth = dependencies.getAuth || getChannelAuth;
+  const makeYouTube = dependencies.makeYouTube || ((auth) => google.youtube({ version: 'v3', auth }));
+  const fetchImage = dependencies.fetchImage || fetch;
+  const auth = await getAuth(channelId, YOUTUBE_EDIT_SCOPE);
+  const youtube = makeYouTube(auth);
+
+  let captionsResponse;
+  try {
+    captionsResponse = await youtube.captions.list({
+      part: ['snippet'],
+      videoId: video.videoId
+    });
+  } catch (error) {
+    if (!isCaptionNotReadyError(error)) throw error;
+    console.warn(`YouTube captions are not ready for OMES video ${video.videoId}: ${error.message}`);
+    captionsResponse = { data: { items: [] } };
+  }
+  const tracks = (captionsResponse.data.items || [])
+    .filter((track) => track.snippet?.status === 'serving')
+    .sort((left, right) => {
+      const preferredLanguage = video.defaultAudioLanguage || video.defaultLanguage;
+      const leftLanguageMatch = preferredLanguage && left.snippet?.language === preferredLanguage;
+      const rightLanguageMatch = preferredLanguage && right.snippet?.language === preferredLanguage;
+      if (leftLanguageMatch !== rightLanguageMatch) return Number(rightLanguageMatch) - Number(leftLanguageMatch);
+      return Number(left.snippet?.trackKind === 'ASR') - Number(right.snippet?.trackKind === 'ASR');
+    });
+  const captionTrack = tracks[0];
+  if (captionTrack) {
+    try {
+      const response = await youtube.captions.download(
+        { id: captionTrack.id, tfmt: 'vtt' },
+        { responseType: 'stream' }
+      );
+      videoContext.transcript = parseCaptionText((await readCaptionData(response.data)).toString('utf8'));
+    } catch (error) {
+      if (!isCaptionNotReadyError(error)) throw error;
+      console.warn(`YouTube captions are not ready for OMES video ${video.videoId}: ${error.message}`);
+    }
+  }
+
+  videoContext.thumbnail = await fetchThumbnailImage(video.thumbnailUrl, fetchImage);
+  return videoContext;
 }
 
 export function hasCompletePublicMetadata(video) {
@@ -484,6 +618,7 @@ export async function optimizeAndPublishLatestVideo(channelId, overrides = {}) {
   const dependencies = {
     findProfile: async () => ChannelProfile.findOne({ channelId }).lean(),
     fetchHistory: getChannelVideosHistory,
+    fetchVideoContext: fetchOmesVideoContext,
     generateMetadata: generateOmesMetadata,
     updateVideo: updateChannelVideoMetadata,
     acquireLock: acquireOmesLock,
@@ -526,7 +661,7 @@ export async function optimizeAndPublishLatestVideo(channelId, overrides = {}) {
   }
 
   try {
-    const history = await dependencies.fetchHistory(channelId, 25);
+    const history = await dependencies.fetchHistory(channelId, 26);
     const latestVideo = history[0];
     if (!latestVideo) {
       await dependencies.saveProfile(new Date(), profile.automation?.omes?.lastOptimizedVideoId || null);
@@ -543,7 +678,8 @@ export async function optimizeAndPublishLatestVideo(channelId, overrides = {}) {
       };
     }
 
-    const metadata = await dependencies.generateMetadata(latestVideo, history, profile);
+    const videoContext = await dependencies.fetchVideoContext(channelId, latestVideo);
+    const metadata = await dependencies.generateMetadata(latestVideo, history, profile, videoContext);
     await dependencies.updateVideo(channelId, latestVideo, metadata);
     const runAt = new Date();
     await dependencies.saveAudit({

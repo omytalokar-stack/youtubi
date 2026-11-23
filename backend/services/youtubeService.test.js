@@ -1,12 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Readable } from 'node:stream';
 import ChannelProfile from '../models/ChannelProfile.js';
 import YouTubeCredential from '../models/YouTubeCredential.js';
 import VideoLog from '../models/VideoLog.js';
 import {
-  buildShortUploadRequest, fetchAnalyticsMetrics, getCachedChannelStats, getChannelAuth, getChannelVideosHistory, hasCompletePublicMetadata,
+  buildShortUploadRequest, fetchAnalyticsMetrics, fetchOmesVideoContext, getCachedChannelStats, getChannelAuth, getChannelVideosHistory, hasCompletePublicMetadata,
   optimizeAndPublishLatestVideo, persistChannelStats, sanitizeYoutubeTags, updateChannelVideoMetadata
 } from './youtubeService.js';
+
+function makeThumbnailResponse(bytes = Buffer.from('thumbnail bytes')) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (name) => name === 'content-type' ? 'image/jpeg' : null },
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+  };
+}
 
 test('builds dashboard statistics from saved channel and video records', async (t) => {
   const originalProfileFindOne = ChannelProfile.findOne;
@@ -197,7 +207,10 @@ test('loads uploads playlist video metadata including private visibility and aud
           calls.push(params);
           return { data: { items: [{
             id: 'private-video',
-            snippet: { title: 'Manually uploaded', description: 'Details', tags: ['draft-topic'], categoryId: '27' },
+            snippet: {
+              title: 'Manually uploaded', description: 'Details', tags: ['draft-topic'], categoryId: '27',
+              thumbnails: { high: { url: 'https://i.ytimg.com/vi/private-video/hqdefault.jpg' } }
+            },
             status: { privacyStatus: 'private', selfDeclaredMadeForKids: false },
             statistics: { viewCount: '42', likeCount: '3' }
           }] } };
@@ -214,6 +227,7 @@ test('loads uploads playlist video metadata including private visibility and aud
     title: 'Manually uploaded',
     description: 'Details',
     tags: ['draft-topic'],
+    thumbnailUrl: 'https://i.ytimg.com/vi/private-video/hqdefault.jpg',
     categoryId: '27',
     defaultLanguage: undefined,
     defaultAudioLanguage: undefined,
@@ -226,6 +240,77 @@ test('loads uploads playlist video metadata including private visibility and aud
     views: 42,
     likes: 3
   });
+});
+
+test('extracts an available owner caption track and downloads the thumbnail image context', async () => {
+  const calls = [];
+  const context = await fetchOmesVideoContext('UCchannel', {
+    videoId: 'private-video',
+    privacyStatus: 'private',
+    defaultAudioLanguage: 'en',
+    thumbnailUrl: 'https://i.ytimg.com/vi/private-video/maxresdefault.jpg'
+  }, {
+    getAuth: async (channelId, scope) => {
+      assert.equal(channelId, 'UCchannel');
+      assert.match(scope, /youtube\.force-ssl$/);
+      return 'auth';
+    },
+    makeYouTube: () => ({
+      captions: {
+        list: async (params) => {
+          calls.push({ method: 'list', params });
+          return { data: { items: [{ id: 'caption-track', snippet: { status: 'serving', language: 'en' } }] } };
+        },
+        download: async (params, options) => {
+          calls.push({ method: 'download', params, options });
+          return { data: Readable.from([Buffer.from('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello <c>world</c>!')]) };
+        }
+      }
+    }),
+    fetchImage: async (url) => {
+      assert.equal(url, 'https://i.ytimg.com/vi/private-video/maxresdefault.jpg');
+      return makeThumbnailResponse();
+    }
+  });
+
+  assert.deepEqual(calls[0], {
+    method: 'list',
+    params: { part: ['snippet'], videoId: 'private-video' }
+  });
+  assert.deepEqual(calls[1], {
+    method: 'download',
+    params: { id: 'caption-track', tfmt: 'vtt' },
+    options: { responseType: 'stream' }
+  });
+  assert.equal(context.transcript, 'Hello world!');
+  assert.deepEqual(context.thumbnail, {
+    mimeType: 'image/jpeg',
+    data: Buffer.from('thumbnail bytes').toString('base64')
+  });
+});
+
+test('continues with thumbnail context when the caption track is still syncing', async () => {
+  let downloaded = false;
+  const context = await fetchOmesVideoContext('UCchannel', {
+    videoId: 'unlisted-video',
+    privacyStatus: 'unlisted',
+    thumbnailUrl: 'https://i.ytimg.com/vi/unlisted-video/hqdefault.jpg'
+  }, {
+    getAuth: async () => 'auth',
+    makeYouTube: () => ({
+      captions: {
+        list: async () => ({
+          data: { items: [{ id: 'pending-track', snippet: { status: 'syncing' } }] }
+        }),
+        download: async () => { downloaded = true; throw new Error('Pending captions must not be downloaded.'); }
+      }
+    }),
+    fetchImage: async () => makeThumbnailResponse()
+  });
+
+  assert.equal(downloaded, false);
+  assert.equal(context.transcript, '');
+  assert.equal(context.thumbnail.mimeType, 'image/jpeg');
 });
 
 test('updates metadata and publishes while preserving the existing made-for-kids declaration', async () => {
@@ -314,6 +399,7 @@ test('optimizes and records audit details for the latest uploaded video', async 
   const auditRecords = [];
   const profileWrites = [];
   const videoWrites = [];
+  let generatedWithContext;
   let updatedVideo;
   const result = await optimizeAndPublishLatestVideo('UCchannel', {
     findProfile: async () => ({ metadataBlueprint: { coreTags: ['channel'] } }),
@@ -328,7 +414,14 @@ test('optimizes and records audit details for the latest uploaded video', async 
       views: 17,
       likes: 2
     }],
-    generateMetadata: async () => ({ title: 'New title', description: 'New description', tags: ['channel', 'new'] }),
+    fetchVideoContext: async () => ({
+      transcript: 'The video describes this story.',
+      thumbnail: { mimeType: 'image/jpeg', data: 'aW1hZ2U=' }
+    }),
+    generateMetadata: async (_video, _history, _profile, context) => {
+      generatedWithContext = context;
+      return { title: 'New title', description: 'New description', tags: ['channel', 'new'] };
+    },
     updateVideo: async (_channelId, video, metadata) => { updatedVideo = { video, metadata }; },
     saveAudit: async (record) => { auditRecords.push(record); },
     saveProfile: async (date, videoId) => { profileWrites.push({ date, videoId }); },
@@ -339,6 +432,10 @@ test('optimizes and records audit details for the latest uploaded video', async 
   assert.equal(result.skipped, false);
   assert.equal(result.videoId, 'video-2');
   assert.equal(updatedVideo.metadata.title, 'New title');
+  assert.deepEqual(generatedWithContext, {
+    transcript: 'The video describes this story.',
+    thumbnail: { mimeType: 'image/jpeg', data: 'aW1hZ2U=' }
+  });
   assert.equal(auditRecords[0].beforeTitle, 'Old title');
   assert.equal(auditRecords[0].afterTitle, 'New title');
   assert.equal(auditRecords[0].privacyAfter, 'public');

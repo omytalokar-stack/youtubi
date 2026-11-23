@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeOmesMetadata } from './metadataOptimizer.js';
+import { generateOmesMetadata, normalizeOmesMetadata } from './metadataOptimizer.js';
 
 test('preserves the channel title suffix and description footer within YouTube limits', () => {
   const suffix = ' | My Channel';
@@ -84,4 +84,74 @@ test('keeps required channel tags and rejects an impossible footer or title suff
   }, {
     metadataBlueprint: { coreTags: ['x'.repeat(501)] }
   }), /core tags exceed/);
+});
+
+test('retries duplicate and heavily overlapping titles while preserving the metadata blueprint', async () => {
+  const suffix = ' | My Channel';
+  const footer = 'Subscribe for more.';
+  const history = [{
+    videoId: 'old-video',
+    title: `Ancient Egypt: 7 Secrets${suffix}`,
+    description: 'History from an older upload.\n\n' + footer,
+    tags: ['history']
+  }];
+  const generated = [
+    { title: 'Ancient Egypt: 7 Secrets', description: 'About the new video.', tags: ['new-topic'] },
+    { title: 'Ancient Egypt: 7 Secrets You Never Knew', description: 'Still about the new video.', tags: ['new-topic'] },
+    { title: 'Why the Nile Flooded Every Summer', description: `A distinct video body.\n\n${footer}`, tags: ['new-topic'] }
+  ];
+  const prompts = [];
+  const metadata = await generateOmesMetadata({
+    videoId: 'new-video',
+    title: 'A new upload',
+    description: 'Unoptimized description',
+    tags: ['draft'],
+    privacyStatus: 'private'
+  }, history, {
+    channelTitle: 'My Channel',
+    metadataBlueprint: {
+      titleSuffix: suffix,
+      fixedDescriptionFooter: footer,
+      coreTags: ['my channel']
+    }
+  }, {
+    transcript: 'The video explains the Nile flood cycle.',
+    thumbnail: { mimeType: 'image/jpeg', data: 'dGh1bWJuYWls' }
+  }, {
+    generate: async (prompt, context) => {
+      prompts.push(prompt);
+      assert.equal(context.transcript, 'The video explains the Nile flood cycle.');
+      return generated.shift();
+    }
+  });
+
+  assert.equal(prompts.length, 3);
+  assert.match(prompts[0], /Ancient Egypt: 7 Secrets/);
+  assert.match(prompts[0], /History from an older upload/);
+  assert.match(prompts[0], /The video explains the Nile flood cycle/);
+  assert.match(prompts[1], /Additional blocked main titles from previous generation attempts/);
+  assert.ok(metadata.title.endsWith(suffix));
+  assert.equal(metadata.description, `A distinct video body.\n\n${footer}`);
+  assert.ok(metadata.tags.includes('my channel'));
+  assert.ok(metadata.tags.includes('new-topic'));
+});
+
+test('rejects a title if all three generations collide with a recent main title', async () => {
+  let attempts = 0;
+  await assert.rejects(generateOmesMetadata({
+    videoId: 'new-video',
+    title: 'Current',
+    description: 'Current description',
+    tags: []
+  }, [{
+    videoId: 'old-video',
+    title: 'A Bright Red Balloon',
+    description: 'Old body'
+  }], {}, {}, {
+    generate: async () => {
+      attempts += 1;
+      return { title: 'A Bright Red Balloon', description: 'New body', tags: ['balloon'] };
+    }
+  }), /duplicate or heavily overlapping title after 3 attempts/);
+  assert.equal(attempts, 3);
 });
