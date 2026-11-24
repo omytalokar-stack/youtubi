@@ -296,6 +296,14 @@ export async function recordPublishedDate(channelId, todayIst, autoPublished = f
   await ChannelProfile.updateOne({ channelId }, { $set: fields });
 }
 
+export async function uploadShortWithCleanup(upload, jobDir) {
+  try {
+    return await upload();
+  } finally {
+    if (jobDir) fs.rmSync(jobDir, { recursive: true, force: true });
+  }
+}
+
 async function publishChannel(channelId, profile, {
   trackPublication = false, autoPublished = false, scheduledDateIst
 } = {}) {
@@ -355,7 +363,10 @@ async function publishChannel(channelId, profile, {
     ensureLock();
     stage = 'uploading';
     updatePipelineStatus(channelId, stage, { lastVideoTitle: generated.title });
-    const videoId = await uploadShort(channelId, render.outputPath, generated, profile.automation.privacyStatus);
+    const videoId = await uploadShortWithCleanup(
+      () => uploadShort(channelId, render.outputPath, generated, profile.automation.privacyStatus),
+      jobDir
+    );
     await VideoLog.create({
       channelId, videoId, topic: generated.topic, title: generated.title, hook: generated.hook,
       script: generated.script, tags: generated.tags, visualMediaIds: render.visualMediaIds,

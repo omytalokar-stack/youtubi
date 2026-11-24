@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import AutomationLock from '../models/AutomationLock.js';
 import ChannelProfile from '../models/ChannelProfile.js';
@@ -7,8 +10,34 @@ import {
   getPipelineStatus, isScheduledChannelStillEligible, RENDER_LOCK_HEARTBEAT_MS,
   RENDER_LOCK_TTL_MS, recordPublishedDate, publishNow, prepareScheduledRun,
   runScheduledTrigger, subscribeToPipelineStatus, updatePipelineStatus,
-  SCHEDULE_RETRY_BASE_MS
+  SCHEDULE_RETRY_BASE_MS, uploadShortWithCleanup
 } from './queueWorkerService.js';
+
+test('removes the complete job directory as soon as upload resolves or fails', async (t) => {
+  const successfulJob = fs.mkdtempSync(path.join(os.tmpdir(), 'dimag_upload_cleanup_test_'));
+  const failedJob = fs.mkdtempSync(path.join(os.tmpdir(), 'dimag_upload_cleanup_test_'));
+  t.after(() => {
+    fs.rmSync(successfulJob, { recursive: true, force: true });
+    fs.rmSync(failedJob, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(successfulJob, 'final_short.mp4'), 'video');
+  fs.writeFileSync(path.join(failedJob, 'final_short.mp4'), 'video');
+  let outputExistedDuringUpload = false;
+
+  const videoId = await uploadShortWithCleanup(async () => {
+    outputExistedDuringUpload = fs.existsSync(path.join(successfulJob, 'final_short.mp4'));
+    return 'uploaded-video';
+  }, successfulJob);
+
+  assert.equal(videoId, 'uploaded-video');
+  assert.equal(outputExistedDuringUpload, true);
+  assert.equal(fs.existsSync(successfulJob), false);
+  await assert.rejects(
+    uploadShortWithCleanup(async () => { throw new Error('YouTube upload failed.'); }, failedJob),
+    /YouTube upload failed/
+  );
+  assert.equal(fs.existsSync(failedJob), false);
+});
 
 test('catches up scheduled channels any time after their IST publish time on the same day', () => {
   const current = getIstSchedule(new Date('2026-11-18T10:30:00.000Z'));
@@ -268,7 +297,7 @@ test('retries persisted retryable failures, including OMES, without requiring au
           mode: 'auto-upload',
           scheduledDateIst: currentDate,
           scheduledTimeIst: '16:00',
-          reason: 'Generated Short failed validation after 3 corrections: every spoken sentence must contain 6-10 words.',
+          reason: 'Generated Short failed validation after 3 corrections: every spoken sentence must contain 11-14 words.',
           retryCount: 0
         }
       }

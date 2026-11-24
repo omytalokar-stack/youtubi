@@ -7,16 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { resolveStockSceneAssets } from './visualService.js';
 
 const execFileAsync = promisify(execFile);
-const SCENE_COUNT = 8;
-const SCENE_DURATION = 2.75;
-const TRANSITION_DURATION = 0.18;
+const SCENE_COUNT = 5;
+const SCENE_DURATION = 6;
 export const OUTPUT_WIDTH = 720;
 export const OUTPUT_HEIGHT = 1280;
 export const FPS = 24;
 export const FFMPEG_TIMEOUT_MS = 480000;
 const FRAME_COUNT = Math.round(SCENE_DURATION * FPS);
-const TRANSITIONS = ['smoothleft', 'wipeleft', 'smoothup', 'dissolve', 'slideright', 'smoothdown', 'wiperight'];
-const OUTPUT_DURATION = SCENE_COUNT * SCENE_DURATION - (SCENE_COUNT - 1) * TRANSITION_DURATION;
+const OUTPUT_DURATION = SCENE_COUNT * SCENE_DURATION;
 const SERVICE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLED_CAPTION_FONT = path.resolve(SERVICE_DIRECTORY, '../assets/fonts/NotoSansDevanagari.ttf');
 const SYSTEM_CAPTION_FONTS = [
@@ -105,10 +103,11 @@ export function buildCaptionFilter(event, fontPath, textFilePath) {
 
 function encodeArgs(outputPath) {
   return [
-    '-threads', '1',
+    '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-crf', '26',
     '-pix_fmt', 'yuv420p',
+    '-threads', '1',
     '-s', `${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}`,
     '-r', String(FPS),
     '-an',
@@ -183,10 +182,62 @@ export function buildVideoFfmpegArgs(outputPath, videoPath, index) {
   ];
 }
 
+export function buildImageVideoFilter(index) {
+  const direction = index % 2 === 0;
+  const x = direction
+    ? `(iw-iw/zoom)*on/${FRAME_COUNT}`
+    : `(iw-iw/zoom)*(1-on/${FRAME_COUNT})`;
+  return [
+    'scale=792:1408:force_original_aspect_ratio=increase:flags=fast_bilinear',
+    'crop=792:1408',
+    `zoompan=z='min(1+0.04*on/${FRAME_COUNT},1.04)':x='${x}':y='(ih-ih/zoom)/2':d=1:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:fps=${FPS}`,
+    'eq=brightness=-0.08:contrast=1.05:saturation=1.08',
+    'setsar=1',
+    'format=yuv420p'
+  ].join(',');
+}
+
+export function buildImageFfmpegArgs(outputPath, imagePath, index) {
+  return [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-filter_threads', '1', '-threads', '1',
+    '-loop', '1', '-framerate', String(FPS), '-i', imagePath,
+    '-vf', buildImageVideoFilter(index),
+    '-frames:v', String(FRAME_COUNT),
+    ...encodeArgs(outputPath)
+  ];
+}
+
+export function buildConcatFfmpegArgs(manifestPath, outputPath) {
+  return [
+    '-hide_banner', '-loglevel', 'error', '-y', '-threads', '1',
+    '-f', 'concat', '-safe', '0', '-i', manifestPath,
+    '-c', 'copy', outputPath
+  ];
+}
+
+export function buildConcatManifest(segmentPaths) {
+  return segmentPaths.map((segmentPath) => {
+    const escapedPath = path.resolve(segmentPath).replace(/\\/g, '/').replace(/'/g, "'\\''");
+    return `file '${escapedPath}'`;
+  }).join('\n') + '\n';
+}
+
+async function renderImageScene(asset, outputPath, index, signal) {
+  if (typeof asset.path !== 'string' || !fs.existsSync(asset.path)) {
+    throw new TypeError(`Scene image ${index} is not available.`);
+  }
+  await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', buildImageFfmpegArgs(outputPath, asset.path, index), {
+    timeout: FFMPEG_TIMEOUT_MS,
+    maxBuffer: 8 * 1024 * 1024,
+    signal
+  });
+}
+
 async function renderProceduralScene(asset, outputPath, index, signal) {
   await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', buildSceneFfmpegArgs(outputPath, asset, index), {
     timeout: FFMPEG_TIMEOUT_MS,
-    maxBuffer: 50 * 1024 * 1024,
+    maxBuffer: 8 * 1024 * 1024,
     signal
   });
 }
@@ -197,12 +248,16 @@ async function renderVideoScene(asset, outputPath, index, signal) {
   }
   await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', buildVideoFfmpegArgs(outputPath, asset.path, index), {
     timeout: FFMPEG_TIMEOUT_MS,
-    maxBuffer: 50 * 1024 * 1024,
+    maxBuffer: 8 * 1024 * 1024,
     signal
   });
 }
 
 async function renderScene(asset, index, outputPath, signal) {
+  if (asset?.type === 'image') {
+    await renderImageScene(asset, outputPath, index, signal);
+    return outputPath;
+  }
   if (asset?.type === 'video') {
     await renderVideoScene(asset, outputPath, index, signal);
     return outputPath;
@@ -214,47 +269,24 @@ async function renderScene(asset, index, outputPath, signal) {
   return outputPath;
 }
 
-function xfadeFilter(captionFilters, sceneCount = SCENE_COUNT, sceneDuration = SCENE_DURATION) {
-  const filters = [];
-  for (let index = 0; index < sceneCount; index += 1) {
-    filters.push(`[${index}:v]settb=AVTB,setpts=PTS-STARTPTS[v${index}]`);
-  }
-  let previous = 'v0';
-  for (let index = 1; index < sceneCount; index += 1) {
-    const output = `xf${index}`;
-    const transition = TRANSITIONS[(index - 1) % TRANSITIONS.length];
-    const offset = (index * (sceneDuration - TRANSITION_DURATION)).toFixed(2);
-    filters.push(`[${previous}][v${index}]xfade=transition=${transition}:duration=${TRANSITION_DURATION}:offset=${offset}[${output}]`);
-    previous = output;
-  }
-  const captions = captionFilters.length ? `,${captionFilters.join(',')}` : '';
-  filters.push(`[${previous}]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:flags=fast_bilinear,fps=${FPS},format=yuv420p${captions}[v]`);
-  return filters.join(';');
-}
-
 export function buildFinalRenderArgs({
-  segmentPaths, audioPath, hasBgm, bgmPath, captionFilters = [], outputPath
+  videoPath, audioPath, hasBgm, bgmPath, captionFilters = [], outputPath
 }) {
-  if (!Array.isArray(segmentPaths) || segmentPaths.length !== SCENE_COUNT) {
-    throw new TypeError(`Exactly ${SCENE_COUNT} rendered scene clips are required.`);
-  }
+  if (typeof videoPath !== 'string' || !videoPath) throw new TypeError('A concatenated scene video is required.');
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-filter_threads', '1', '-filter_complex_threads', '1'];
-  const sceneCount = segmentPaths.length;
-  const sceneDuration = SCENE_DURATION;
-  for (let index = 0; index < sceneCount; index += 1) {
-    args.push('-threads', '1', '-i', segmentPaths[index]);
-  }
+  args.push('-threads', '1', '-i', videoPath);
   args.push('-threads', '1', '-i', audioPath);
   if (hasBgm) args.push('-stream_loop', '-1', '-threads', '1', '-i', bgmPath);
 
-  const voiceInput = sceneCount;
+  const voiceInput = 1;
   const ambientTone = `aevalsrc=0.42*sin(2*PI*110*t)+0.30*sin(2*PI*164.81*t)+0.18*sin(2*PI*220*t):s=48000:c=stereo:d=${OUTPUT_DURATION},volume=0.1,lowpass=f=900[ambient]`;
   const audioFilter = hasBgm
-    ? `${ambientTone};[${voiceInput}:a]volume=1[voice];[${voiceInput + 1}:a]volume=0.08[music];[ambient][music]amix=inputs=2:duration=longest:normalize=0[bed];[voice][bed]amix=inputs=2:duration=first:normalize=0[a]`
+    ? `${ambientTone};[${voiceInput}:a]volume=1[voice];[2:a]volume=0.08[music];[ambient][music]amix=inputs=2:duration=longest:normalize=0[bed];[voice][bed]amix=inputs=2:duration=first:normalize=0[a]`
     : `${ambientTone};[${voiceInput}:a]volume=1[voice];[voice][ambient]amix=inputs=2:duration=first:normalize=0[a]`;
+  args.push('-filter_complex', audioFilter);
+  if (captionFilters.length) args.push('-vf', captionFilters.join(','));
   args.push(
-    '-filter_complex', `${audioFilter};${xfadeFilter(captionFilters, sceneCount, sceneDuration)}`,
-    '-map', '[v]', '-map', '[a]', '-shortest',
+    '-map', '0:v:0', '-map', '[a]', '-shortest',
     '-s', `${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}`, '-r', String(FPS),
     '-c:v', 'libx264', '-threads', '1', '-preset', 'ultrafast',
     '-crf', '26', '-pix_fmt', 'yuv420p',
@@ -277,6 +309,8 @@ export async function renderShort({
   }
   const outputPath = path.join(jobDir, 'final_short.mp4');
   const segmentPaths = sceneAssets.map((_, index) => path.join(jobDir, `segment_${index}.mp4`));
+  const manifestPath = path.join(jobDir, 'scene_concat.txt');
+  const concatVideoPath = path.join(jobDir, 'scene_concat.mp4');
   const captionPaths = [];
   let resolvedAssets = sceneAssets;
   let rendered = false;
@@ -290,32 +324,41 @@ export async function renderShort({
       return buildCaptionFilter(event, fontPath, textPath);
     });
     resolvedAssets = await resolveStockSceneAssets(sceneAssets, jobDir, signal, excludedMediaIds);
+    const bgmPath = process.env.OPTIONAL_BGM_PATH;
+    const hasBgm = Boolean(bgmPath && fs.existsSync(bgmPath));
     for (let index = 0; index < resolvedAssets.length; index += 1) {
       await renderScene(resolvedAssets[index], index, segmentPaths[index], signal);
     }
-
-    const bgmPath = process.env.OPTIONAL_BGM_PATH;
-    const hasBgm = Boolean(bgmPath && fs.existsSync(bgmPath));
+    fs.writeFileSync(manifestPath, buildConcatManifest(segmentPaths), 'utf8');
+    await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', buildConcatFfmpegArgs(manifestPath, concatVideoPath), {
+      timeout: FFMPEG_TIMEOUT_MS,
+      maxBuffer: 8 * 1024 * 1024,
+      signal
+    });
     const args = buildFinalRenderArgs({
-      segmentPaths, audioPath, hasBgm, bgmPath, captionFilters, outputPath
+      videoPath: concatVideoPath, audioPath, hasBgm, bgmPath, captionFilters, outputPath
     });
     await execFileAsync(process.env.FFMPEG_PATH || 'ffmpeg', args, {
       timeout: FFMPEG_TIMEOUT_MS,
-      maxBuffer: 50 * 1024 * 1024,
+      maxBuffer: 8 * 1024 * 1024,
       signal
     });
     rendered = true;
     return {
       outputPath,
-      visualMediaIds: resolvedAssets
-        .filter((asset) => asset.type === 'video' && asset.mediaId)
-        .map((asset) => asset.mediaId)
+      visualMediaIds: [...new Set(resolvedAssets
+        .filter((asset) => (asset.type === 'video' || asset.type === 'image') && asset.mediaId)
+        .map((asset) => asset.mediaId))]
     };
   } finally {
     const cleanupPaths = [
       ...segmentPaths,
+      manifestPath,
+      concatVideoPath,
       ...captionPaths,
-      ...resolvedAssets.filter((asset) => asset.type === 'video').map((asset) => asset.path)
+      ...new Set(resolvedAssets
+        .filter((asset) => asset.type === 'video' || asset.type === 'image')
+        .map((asset) => asset.path))
     ];
     if (isWithinJobDirectory(jobDir, audioPath)) cleanupPaths.push(audioPath);
     if (!rendered) cleanupPaths.push(outputPath);

@@ -4,19 +4,16 @@ import path from 'node:path';
 import { Transform, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-export const PROCEDURAL_SCENE_COUNT = 8;
-const STOCK_API_TIMEOUT_MS = 15000;
-const MAX_STOCK_CLIP_BYTES = 8 * 1024 * 1024;
-const MAX_STOCK_DOWNLOAD_BYTES = 48 * 1024 * 1024;
+export const PROCEDURAL_SCENE_COUNT = 5;
+const STOCK_API_TIMEOUT_MS = 10000;
+const MAX_SCENE_IMAGE_BYTES = 1024 * 1024;
+const MAX_TOTAL_IMAGE_BYTES = PROCEDURAL_SCENE_COUNT * MAX_SCENE_IMAGE_BYTES;
 const CALM_QUERIES = [
   'misty forest dawn',
   'gentle rain window',
   'cinematic night lights',
   'calm ocean waves',
-  'soft mountain fog',
-  'quiet river reflection',
-  'nature leaves after rain',
-  'warm city lights night'
+  'soft mountain fog'
 ];
 const PROMPT_STOP_WORDS = new Set([
   'action', 'animation', 'camera', 'character', 'cinematic', 'lighting', 'motion',
@@ -54,7 +51,7 @@ function makeSearchQuery(asset, index) {
   if (asset.visualQuery) return asset.visualQuery;
   const prompt = asset.prompt.toLowerCase();
   const promptTerms = prompt.match(/[a-z]{3,}/g) || [];
-  const specificTerms = promptTerms.filter((word) => !PROMPT_STOP_WORDS.has(word)).slice(0, 2);
+  const specificTerms = promptTerms.filter((word) => !PROMPT_STOP_WORDS.has(word)).slice(0, 3);
   const moodTerms = /\b(water|ocean|river|rain|wave|lake)\b/.test(prompt)
     ? 'calm waves ocean mist'
     : /\b(night|city|light|neon)\b/.test(prompt)
@@ -78,47 +75,41 @@ function allowedMediaUrl(rawUrl, provider) {
     return null;
   }
   const allowedHosts = provider === 'pexels'
-    ? ['videos.pexels.com', 'player.vimeo.com']
-    : ['cdn.pixabay.com'];
+    ? ['images.pexels.com']
+    : ['pixabay.com', 'cdn.pixabay.com'];
   if (url.protocol !== 'https:' || !allowedHosts.includes(url.hostname) ||
-      !url.pathname.toLowerCase().endsWith('.mp4')) return null;
+      !/\.(?:jpe?g|png|webp)$/i.test(url.pathname)) return null;
   return url;
 }
 
-function choosePortraitVideo(files, provider, usedMedia = new Set()) {
-  const eligible = files.filter((file) => {
-    const width = Number(file.width);
-    const height = Number(file.height);
-    const url = file.link || file.url;
-    const mediaId = `${provider}:${file.media_id || file.id || url}`;
-    return (!file.file_type || file.file_type === 'video/mp4') &&
-      width >= 480 && height >= 850 && width < height &&
-      width <= 1080 && height <= 1920 &&
-      allowedMediaUrl(url, provider) &&
-      !usedMedia.has(mediaId) && !usedMedia.has(url) &&
-      (!file.size || Number(file.size) <= MAX_STOCK_CLIP_BYTES);
-  });
-  eligible.sort((left, right) =>
-    Math.abs(Number(left.width) * Number(left.height) - 720 * 1280) -
-    Math.abs(Number(right.width) * Number(right.height) - 720 * 1280)
+function choosePortraitPhoto(photos, provider, usedMedia = new Set()) {
+  const eligible = photos.map((photo) => {
+    const url = provider === 'pexels' ? photo.src?.portrait : photo.webformatURL;
+    return {
+      url,
+      width: Number(photo.width || photo.webformatWidth),
+      height: Number(photo.height || photo.webformatHeight),
+      mediaId: `${provider}:${photo.id || url}`
+    };
+  }).filter((photo) =>
+    photo.width >= 400 && photo.height >= 700 && photo.width < photo.height &&
+    photo.width <= 1080 && photo.height <= 1920 &&
+    allowedMediaUrl(photo.url, provider) &&
+    !usedMedia.has(photo.mediaId) && !usedMedia.has(photo.url)
   );
-  const file = eligible[0];
-  if (!file) return null;
-  const url = file.link || file.url;
-  return {
-    url,
-    provider,
-    mediaId: `${provider}:${file.media_id || file.id || url}`,
-    size: Number(file.size) || 0
-  };
+  eligible.sort((left, right) =>
+    Math.abs(left.width * left.height - 720 * 1280) -
+    Math.abs(right.width * right.height - 720 * 1280)
+  );
+  const photo = eligible[0];
+  return photo ? { ...photo, provider, size: 0 } : null;
 }
 
 async function searchPexels(asset, index, apiKey, signal, usedMedia) {
-  const url = new URL('https://api.pexels.com/videos/search');
+  const url = new URL('https://api.pexels.com/v1/search');
   url.search = new URLSearchParams({
     query: makeSearchQuery(asset, index),
     orientation: 'portrait',
-    size: 'medium',
     per_page: '5'
   });
   const response = await fetch(url, {
@@ -128,16 +119,15 @@ async function searchPexels(asset, index, apiKey, signal, usedMedia) {
   });
   if (!response.ok) throw new Error(`Pexels API returned HTTP ${response.status}.`);
   const payload = await response.json();
-  return choosePortraitVideo((payload.videos || []).flatMap((video) =>
-    (video.video_files || []).map((file) => ({ ...file, media_id: video.id }))
-  ), 'pexels', usedMedia);
+  return choosePortraitPhoto(payload.photos || [], 'pexels', usedMedia);
 }
 
 async function searchPixabay(asset, index, apiKey, signal, usedMedia) {
-  const url = new URL('https://pixabay.com/api/videos/');
+  const url = new URL('https://pixabay.com/api/');
   url.search = new URLSearchParams({
     key: apiKey,
     q: makeSearchQuery(asset, index),
+    image_type: 'photo',
     orientation: 'vertical',
     safesearch: 'true',
     per_page: '5'
@@ -145,36 +135,27 @@ async function searchPixabay(asset, index, apiKey, signal, usedMedia) {
   const response = await fetch(url, { redirect: 'error', signal: requestSignal(signal) });
   if (!response.ok) throw new Error(`Pixabay API returned HTTP ${response.status}.`);
   const payload = await response.json();
-  return choosePortraitVideo(
-    (payload.hits || []).flatMap((hit) =>
-      Object.values(hit.videos || {}).map((file) => ({ ...file, media_id: hit.id }))
-    ),
-    'pixabay',
-    usedMedia
-  );
+  return choosePortraitPhoto(payload.hits || [], 'pixabay', usedMedia);
 }
 
-async function downloadStockVideo(video, destination, signal) {
-  const url = allowedMediaUrl(video.url, video.provider);
-  if (!url) throw new Error(`The ${video.provider} API returned an unsupported video URL.`);
-  const response = await fetch(url, {
-    redirect: 'error',
-    signal: requestSignal(signal)
-  });
-  if (!response.ok) throw new Error(`${video.provider} video returned HTTP ${response.status}.`);
+async function downloadSceneImage(photo, destination, signal) {
+  const url = allowedMediaUrl(photo.url, photo.provider);
+  if (!url) throw new Error(`The ${photo.provider} API returned an unsupported image URL.`);
+  const response = await fetch(url, { redirect: 'error', signal: requestSignal(signal) });
+  if (!response.ok) throw new Error(`${photo.provider} image returned HTTP ${response.status}.`);
   const contentType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase();
-  if (contentType && contentType !== 'video/mp4' && contentType !== 'application/octet-stream') {
-    throw new Error(`${video.provider} returned a non-MP4 video.`);
+  if (contentType && !['image/jpeg', 'image/png', 'image/webp', 'application/octet-stream'].includes(contentType)) {
+    throw new Error(`${photo.provider} returned a non-image response.`);
   }
-  const contentLength = Number(response.headers.get('content-length') || video.size || 0);
-  if (contentLength > MAX_STOCK_CLIP_BYTES) throw new Error(`${video.provider} video exceeds the per-clip size limit.`);
-  if (!response.body) throw new Error(`${video.provider} returned an empty video response.`);
+  const contentLength = Number(response.headers.get('content-length') || photo.size || 0);
+  if (contentLength > MAX_SCENE_IMAGE_BYTES) throw new Error(`${photo.provider} image exceeds the per-image size limit.`);
+  if (!response.body) throw new Error(`${photo.provider} returned an empty image response.`);
 
   let byteCount = 0;
   const sizeLimit = new Transform({
     transform(chunk, encoding, callback) {
       byteCount += chunk.length;
-      if (byteCount > MAX_STOCK_CLIP_BYTES) return callback(new Error('Stock video exceeds the per-clip size limit.'));
+      if (byteCount > MAX_SCENE_IMAGE_BYTES) return callback(new Error('Scene image exceeds the per-image size limit.'));
       callback(null, chunk);
     }
   });
@@ -203,39 +184,61 @@ export async function resolveStockSceneAssets(sceneAssets, jobDir, signal, exclu
   let totalBytes = 0;
   const downloadedPaths = [];
   const resolvedAssets = [];
+  const disabledProviders = new Set();
+  let lastImageAsset;
+  let reuseAvailableFrame = false;
   try {
     for (let index = 0; index < sceneAssets.length; index += 1) {
       const asset = sceneAssets[index];
       let resolvedAsset = asset;
       for (const provider of providers) {
+        if (disabledProviders.has(provider.name)) continue;
         try {
-          const video = await provider.search(asset, index);
-          if (!video) continue;
-          const videoPath = path.join(jobDir, `stock_scene_${index}.mp4`);
-          const byteCount = await downloadStockVideo(video, videoPath, signal);
-          if (totalBytes + byteCount > MAX_STOCK_DOWNLOAD_BYTES) {
-            await fs.rm(videoPath, { force: true });
-            console.warn('Skipping stock video because the per-job download limit was reached.');
+          const photo = await provider.search(asset, index);
+          if (!photo) continue;
+          const extension = path.extname(new URL(photo.url).pathname).toLowerCase();
+          const imagePath = path.join(jobDir, `scene_image_${index}${extension}`);
+          const byteCount = await downloadSceneImage(photo, imagePath, signal);
+          if (totalBytes + byteCount > MAX_TOTAL_IMAGE_BYTES) {
+            await fs.rm(imagePath, { force: true });
+            console.warn('Skipping scene image because the per-job download limit was reached.');
             continue;
           }
           totalBytes += byteCount;
-          downloadedPaths.push(videoPath);
-          usedMedia.add(video.mediaId);
-          usedMedia.add(video.url);
+          downloadedPaths.push(imagePath);
+          usedMedia.add(photo.mediaId);
+          usedMedia.add(photo.url);
           resolvedAsset = {
             ...asset,
-            type: 'video',
-            path: videoPath,
-            source: video.provider,
-            mediaId: video.mediaId,
-            mediaUrl: video.url
+            type: 'image',
+            path: imagePath,
+            source: photo.provider,
+            mediaId: photo.mediaId,
+            mediaUrl: photo.url
           };
           break;
         } catch (error) {
           if (signal?.aborted) throw error;
-          console.warn(`Unable to retrieve ${provider.name} video for scene ${index}: ${error.message}`);
+          if (/HTTP 429\b/.test(error.message)) {
+            disabledProviders.add(provider.name);
+            reuseAvailableFrame = true;
+          }
+          console.warn(`Unable to retrieve ${provider.name} image for scene ${index}; using a local scene visual: ${error.message}`);
         }
       }
+      if (resolvedAsset.type === 'procedural' && reuseAvailableFrame && lastImageAsset) {
+        resolvedAsset = {
+          ...lastImageAsset,
+          ...asset,
+          type: 'image',
+          path: lastImageAsset.path,
+          source: lastImageAsset.source,
+          mediaId: lastImageAsset.mediaId,
+          mediaUrl: lastImageAsset.mediaUrl,
+          reusedFrame: true
+        };
+      }
+      if (resolvedAsset.type === 'image' && !resolvedAsset.reusedFrame) lastImageAsset = resolvedAsset;
       resolvedAssets.push(resolvedAsset);
     }
     return resolvedAssets;

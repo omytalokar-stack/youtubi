@@ -98,22 +98,22 @@ Manual aur scheduled publishing ek hi backend pipeline ka upyog karte hain:
 
 1. **Channel selection / profile:** Selected channel ki profile, automation privacy aur usi channel ka brain memory read hota hai.
 2. **Performance learning:** Backend us channel ke latest videos (adhiktam 30) aur analytics metrics mangta hai. Recent performance ke relative winners/underperformers classify karke Gemini se supported patterns aur agle video ki strategy nikalta hai.
-3. **Script aur metadata:** Gemini se JSON banwaya jata hai jisme hook, concise topic, title, 55–70 shabdon ka spoken script, loop ending, description, tags, aath scenes aur aath subtitle beats hote hain. Prompt mein usi channel ke aakhri 30 topics/titles/hooks ki strict do-not-repeat list di jati hai. Server weak opening, galat sentence/word counts, loop mismatch, duplicate ya near-duplicate recent topic, duplicate visual query aur subtitle/scene mismatch ko reject karta hai. Gemini ko correction ke liye adhiktam do retries milte hain; phir bhi invalid ho to job fail hoti hai.
+3. **Script aur metadata:** Gemini se JSON banwaya jata hai jisme hook, concise topic, title, 55–70 shabdon ka spoken script, loop ending, description, tags, paanch scenes aur paanch subtitle beats hote hain. Har scene ek chronological 11–14 shabdon ka sentence hota hai. Prompt mein usi channel ke aakhri 30 topics/titles/hooks ki strict do-not-repeat list di jati hai. Server weak opening, galat sentence/word counts, loop mismatch, duplicate ya near-duplicate recent topic, duplicate visual query aur subtitle/scene mismatch ko reject karta hai. Gemini ko correction ke liye adhiktam paanch retries milte hain; phir bhi invalid ho to job fail hoti hai.
 4. **Blueprint apply:** Channel ka title suffix, description footer aur core tags generated metadata mein jode/lock kiye jate hain.
 5. **Voiceover:** Gemini TTS script ko selected language ke liye voice mein banata hai. Audio ko FFmpeg se MP3 mein convert kiya jata hai.
-6. **Visual scenes:** Har scene mein apne spoken sentence se aligned visual search query hoti hai, jisme channel ka configured visual prefix bhi shamil hota hai. Pexels/Pixabay API keys hon to backend vertical MP4 B-roll search karta hai aur current Short aur usi channel ke aakhri 30 logs mein saved media IDs/URLs ko skip karta hai. Alag clip na mile to scene procedural colored visual ban jata hai; ek hi clip ko doosre scene mein repeat nahi kiya jata.
-7. **Captions aur render:** Hook 0–2 second tak top par rehta hai; subtitles scene-wise timed word groups hote hain. Aathva sentence ending shot mein aata hai aur script ka final sentence opening se loop karne ke liye likha jata hai. Devanagari font, black outline/shadow aur dark caption box use hote hain; scenes transitions ke saath jod kar voice ke neeche halki synthesized ambient sound mix hoti hai.
+6. **Visual scenes:** Har scene mein apne spoken sentence se aligned visual search query hoti hai, jisme channel ka configured visual prefix bhi shamil hota hai. Pexels/Pixabay API keys hon to backend portrait still images leta hai aur current Short aur usi channel ke aakhri 30 logs mein saved media IDs/URLs ko skip karta hai. Har image 1 MiB aur poora job 5 MiB tak seemit hai. Image na mile ya request fail ho to scene ka apna procedural visual use hota hai; rate-limit ke baad pehle se mili image available ho to use alternate pan/zoom ke saath reuse kiya jata hai.
+7. **Captions aur render:** Hook 0–2 second tak top par rehta hai; paanch scenes ke subtitles dynamic timed word groups hote hain. Aakhri sentence opening se loop karne ke liye likha jata hai. Devanagari font, outline/shadow aur dark caption box use hote hain; narration ke neeche halki synthesized ambient sound mix hoti hai.
 8. **YouTube upload:** Video channel ke saved privacy status ke saath upload hota hai. Title/description/tags metadata bheje jate hain.
-9. **Record aur cleanup:** Video ID, topic, title, script, hook, tags, publish time aur use hue stock media IDs `VideoLog` mein save hote hain; stats refresh ki koshish hoti hai. Temporary job files success/failure ke baad clean up hote hain.
+9. **Record aur cleanup:** Video ID, topic, title, script, hook, tags, publish time aur use hue stock media IDs `VideoLog` mein save hote hain; stats refresh ki koshish hoti hai. Scene images, intermediate clips, audio aur final MP4 render/upload cleanup ke `finally` blocks mein delete hote hain.
 
 ### Render ki technical details
 
-- 8 scenes × 2.75 seconds, lagbhag 20.7 seconds final duration (overlap transitions ke baad)
+- 5 scenes × 6 seconds, lagbhag 30 seconds final duration
 - 720 × 1280 portrait, 24 FPS, H.264 (`libx264`), AAC, `yuv420p`
-- 0.18-second xfade transitions; har render process par 8 minute timeout
-- Single-threaded sequential FFmpeg processing, `ultrafast` preset aur 720p frame size memory ko bounded rakhte hain; existing crop expressions subtle zoom/pan dete hain
+- Har scene alag FFmpeg process mein single-thread encode hota hai; segments concat demuxer se `-c copy` hote hain, uske baad narration/subtitles mux hote hain
+- Single-threaded sequential FFmpeg processing, `ultrafast` preset, CRF 26 aur 720p frame size memory ko bounded rakhte hain; still images par alternating gentle Ken Burns pan/zoom lagta hai
 - Caption groups chhote timed word-groups hote hain; hook pehle 2 seconds top par, subtitles scene ke beech mein aate hain
-- Stock video download par per-clip aur per-job size limits aur approved HTTPS media hosts check hote hain
+- Stock image download par 1 MiB per-image aur 5 MiB per-job size limits aur approved HTTPS media hosts check hote hain
 - Render failure ko khaali/fake video se replace nahi kiya jata; publishing ruk kar error status set hota hai
 
 **Important:** Gemini yahan script/scene descriptions aur voice banata hai. Source code ke mutabik Gemini se actual scene-image/video generation nahi hota. Visual layer ya to configured Pexels/Pixabay portrait clips hai ya FFmpeg ke procedural abstract scenes.

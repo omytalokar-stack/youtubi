@@ -17,7 +17,7 @@ function normalizedWords(text) {
   return String(text).toLocaleLowerCase().replace(/[\p{P}\p{S}]/gu, ' ').trim().split(/\s+/).filter(Boolean);
 }
 
-const SCENE_COUNT = 8;
+const SCENE_COUNT = 5;
 const MAX_DRAFT_CORRECTIONS = 5;
 const TOPIC_STOP_WORDS = new Set([
   'about', 'after', 'again', 'also', 'been', 'before', 'being', 'could', 'from', 'have',
@@ -93,8 +93,8 @@ export function validateCreativeDraft(result, recentVideos = [], visualPrefix = 
   }
   const sentences = splitSentences(result.script);
   if (sentences.length !== SCENE_COUNT) return `the script has ${sentences.length} sentences instead of ${SCENE_COUNT}`;
-  if (sentences.some((sentence) => scriptWordCount(sentence) < 6 || scriptWordCount(sentence) > 10)) {
-    return 'every spoken sentence must contain 6-10 words';
+  if (sentences.some((sentence) => scriptWordCount(sentence) < 11 || scriptWordCount(sentence) > 14)) {
+    return 'every spoken sentence must contain 11-14 words';
   }
   const weakOpeners = /^(?:hello\s+guys\b|kya\s+aap\s+jaante\s+hain\b|क्या\s+आप\s+जानते\s+हैं\b|doston\b.{0,80}\b(?:baat\s+kar(?:enge|te\s+hain)|talk\s+about)\b)/iu;
   if (weakOpeners.test(sentences[0]) || weakOpeners.test(String(result.hook))) {
@@ -104,9 +104,9 @@ export function validateCreativeDraft(result, recentVideos = [], visualPrefix = 
     return 'loopEnding must exactly match the final spoken sentence';
   }
   if (!Array.isArray(result.subtitleBeats) || result.subtitleBeats.length !== SCENE_COUNT ||
-      result.subtitleBeats.some((beat) => typeof beat !== 'string' || scriptWordCount(beat) < 5 || scriptWordCount(beat) > 10) ||
+      result.subtitleBeats.some((beat) => typeof beat !== 'string' || scriptWordCount(beat) < 11 || scriptWordCount(beat) > 14) ||
       normalizedWords(result.subtitleBeats.join(' ')).join(' ') !== normalizedWords(result.script).join(' ')) {
-    return 'subtitleBeats must contain eight 5-10 word chunks that reproduce the script exactly';
+    return 'subtitleBeats must contain five 11-14 word scene beats that reproduce the script exactly';
   }
   if (!Array.isArray(result.scenes) || result.scenes.length !== SCENE_COUNT) {
     return `the draft must contain exactly ${SCENE_COUNT} scenes`;
@@ -127,13 +127,15 @@ export function validateCreativeDraft(result, recentVideos = [], visualPrefix = 
     }
     visualQueries.push(normalizedVisualQuery(scene.visualQuery));
   }
-  if (new Set(visualQueries).size !== SCENE_COUNT) return 'all eight visualQuery values must be distinct';
+  if (new Set(visualQueries).size !== SCENE_COUNT) return 'all five visualQuery values must be distinct';
   const repeatedTopic = findSimilarRecentTopic(result, recentVideos);
   if (repeatedTopic) return `the topic is too similar to a recent video: "${repeatedTopic}"`;
   return null;
 }
 
 function splitIntoScenes(script) {
+  const sentences = splitSentences(script);
+  if (sentences.length === SCENE_COUNT) return sentences;
   const words = script.trim().split(/\s+/).filter(Boolean);
   const baseSize = Math.floor(words.length / SCENE_COUNT);
   const extraWords = words.length % SCENE_COUNT;
@@ -150,7 +152,7 @@ function splitIntoScenes(script) {
 export function normalizeSubtitleBeats(script, subtitleBeats) {
   if (Array.isArray(subtitleBeats) &&
       subtitleBeats.length === SCENE_COUNT &&
-      subtitleBeats.every((beat) => typeof beat === 'string' && scriptWordCount(beat) >= 5 && scriptWordCount(beat) <= 10) &&
+      subtitleBeats.every((beat) => typeof beat === 'string' && scriptWordCount(beat) >= 11 && scriptWordCount(beat) <= 14) &&
       normalizedWords(subtitleBeats.join(' ')).join(' ') === normalizedWords(script).join(' ')) {
     return subtitleBeats;
   }
@@ -158,36 +160,27 @@ export function normalizeSubtitleBeats(script, subtitleBeats) {
 }
 
 const cameraMoves = [
-  'rapid push-in to the subject',
-  'whip-pan reveal from left to right',
+  'slow push-in toward the subject',
+  'gentle pan from left to right',
   'low-angle tracking move',
-  'fast orbit around the subject',
-  'sharp tilt-up reveal',
-  'snap zoom through the foreground',
-  'sideways tracking shot with a sudden stop',
-  'fast pull-back revealing the full scene'
+  'slow orbit around the subject',
+  'steady pull-back revealing the full scene'
 ];
 
 const motionCues = [
-  'the character bursts into decisive action',
-  'the subject darts across the frame',
-  'the character pivots and drives forward',
-  'the subject reaches toward the focal point',
-  'the character turns sharply into motion',
-  'the subject jumps through a burst of light',
-  'the character spins and points toward the horizon',
-  'the subject races past the camera'
+  'the subject moves naturally into the scene',
+  'a small environmental detail shifts in the foreground',
+  'the subject turns toward the focal point',
+  'light and nearby objects move gently',
+  'the subject settles into the final composition'
 ];
 
 const lightingCues = [
-  'dramatic warm key light with deep shadows',
-  'cool cyan edge light and high contrast',
-  'golden side light with cinematic shadows',
-  'soft backlight with a bright moving highlight',
-  'moody low-key lighting with a sharp rim',
-  'electric magenta glow against deep shadows',
-  'bright teal beams crossing a dark background',
-  'pulsing violet backlight with a warm foreground'
+  'soft directional light with natural shadows',
+  'warm side light with gentle contrast',
+  'diffused daylight and balanced colors',
+  'subtle backlight with a clear focal point',
+  'natural golden-hour light with soft shadows'
 ];
 
 function sourceScenePrompts(result) {
@@ -295,10 +288,10 @@ export async function generateShort(channelId, { onWriting } = {}) {
 Create one YouTube Short for channel ${profile.channelTitle}. Niche: ${profile.niche}. Language: ${profile.language}.
 Tone: ${profile.toneAndStyle}. Channel visual search prefix: ${profile.visualKeywordsPrefix || '(none)'}.
 Create a fresh, specific topic that is not a duplicate or near-duplicate in meaning of any item in this strict do-not-repeat list. ${buildRecentTopicPrompt(recentVideos)} If your first idea overlaps, choose a different topic before writing.
-Write a natural 55-70 word spoken script (target 62; count words separated by spaces) as exactly 8 complete sentences, one per scene, with 6-10 words in every sentence. Timing: the spoken opening and on-screen hook land in 0-2 seconds; body beats run from about 3 seconds to the final 3 seconds; the loop-ending sentence belongs in those last 3 seconds. Design each scene for about 2.5-3 seconds. The first sentence must open in the middle of an action using a surprising contrast, a concrete number, or a strong curiosity gap. Make the separate on-screen hook a concise version of that opening. Do not begin the hook or script with "Doston aaj hum baat karenge", "Hello guys", or "Kya aap jaante hain" (including close variants).
+Write a natural 55-70 word spoken script (target 62; count words separated by spaces) as exactly 5 complete chronological sentences, one per scene, with 11-14 words in every sentence. The total video is about 30 seconds, with each scene lasting about 6 seconds. The spoken opening and on-screen hook land in 0-2 seconds; body beats progress naturally and the loop-ending sentence belongs in the final scene. The first sentence must open in the middle of an action using a surprising contrast, a concrete number, or a strong curiosity gap. Make the separate on-screen hook a concise version of that opening. Do not begin the hook or script with "Doston aaj hum baat karenge", "Hello guys", or "Kya aap jaante hain" (including close variants).
 Keep the middle sentences crisp and specific, revealing a new detail or question with each beat. The final sentence is the seamless-loop ending: write it so its grammar and rhythm flow directly back into the opening sentence when the video restarts. Set loopEnding to that exact final sentence.
-Return exactly 8 chronological scenes. Every scenes[i].sentence must exactly match subtitleBeats[i]. Every scene must include a concise visualQuery tailored to that sentence and the channel visual search prefix "${profile.visualKeywordsPrefix || ''}". All eight visualQuery values must be different and describe the actual subject/action in that specific sentence; do not repeat or lightly rephrase a query. Also include action, motion, camera, and lighting strings for distinct 9:16 scene direction.
-subtitleBeats must contain exactly 8 spoken sentences, 6-10 words each, and together reproduce script exactly, in order, without adding or omitting words. The renderer will display each beat as fast 2-3 word captions.
+Return exactly 5 chronological scenes. Every scenes[i].sentence must exactly match subtitleBeats[i]. Every scene must include a concise, topic-relevant visualQuery tailored to that sentence and the channel visual search prefix "${profile.visualKeywordsPrefix || ''}". All five visualQuery values must be different and describe the actual subject/action in that specific sentence; do not repeat or lightly rephrase a query. Also include action, motion, camera, and lighting strings for distinct 9:16 scene direction.
+subtitleBeats must contain exactly 5 spoken sentences, 11-14 words each, and together reproduce script exactly, in order, without adding or omitting words. The renderer will display each beat as dynamic 3-5 word captions.
 tags must be an array of strings and include these core tags: ${(blueprint.coreTags || []).join(', ')}.
 ${blueprint.titleSuffix
     ? `Append this locked suffix to the title exactly: ${JSON.stringify(blueprint.titleSuffix)}.`
