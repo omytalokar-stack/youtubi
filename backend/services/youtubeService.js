@@ -489,7 +489,7 @@ async function fetchThumbnailImage(url, fetchImage = fetch) {
 
 export async function fetchOmesVideoContext(channelId, video, dependencies = {}) {
   const videoContext = { transcript: '', thumbnail: null };
-  if (!['private', 'unlisted'].includes(video.privacyStatus)) return videoContext;
+  if (!['private', 'unlisted', 'public'].includes(video.privacyStatus)) return videoContext;
 
   const getAuth = dependencies.getAuth || getChannelAuth;
   const makeYouTube = dependencies.makeYouTube || ((auth) => google.youtube({ version: 'v3', auth }));
@@ -531,7 +531,11 @@ export async function fetchOmesVideoContext(channelId, video, dependencies = {})
     }
   }
 
-  videoContext.thumbnail = await fetchThumbnailImage(video.thumbnailUrl, fetchImage);
+  try {
+    videoContext.thumbnail = await fetchThumbnailImage(video.thumbnailUrl, fetchImage);
+  } catch (error) {
+    console.warn(`YouTube thumbnail is unavailable for OMES video ${video.videoId}: ${error.message}`);
+  }
   return videoContext;
 }
 

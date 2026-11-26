@@ -367,6 +367,44 @@ test('continues with thumbnail context when YouTube reports that captions are pr
   assert.equal(context.thumbnail.mimeType, 'image/jpeg');
 });
 
+test('uses caption and thumbnail context for public OMES videos', async () => {
+  const context = await fetchOmesVideoContext('UCchannel', {
+    videoId: 'public-video',
+    privacyStatus: 'public',
+    thumbnailUrl: 'https://i.ytimg.com/vi/public-video/hqdefault.jpg'
+  }, {
+    getAuth: async () => 'auth',
+    makeYouTube: () => ({
+      captions: {
+        list: async () => ({ data: { items: [] } })
+      }
+    }),
+    fetchImage: async () => makeThumbnailResponse()
+  });
+
+  assert.equal(context.transcript, '');
+  assert.equal(context.thumbnail.mimeType, 'image/jpeg');
+});
+
+test('continues OMES editing when the thumbnail request fails', async () => {
+  const context = await fetchOmesVideoContext('UCchannel', {
+    videoId: 'public-video',
+    privacyStatus: 'public',
+    thumbnailUrl: 'https://i.ytimg.com/vi/public-video/hqdefault.jpg'
+  }, {
+    getAuth: async () => 'auth',
+    makeYouTube: () => ({
+      captions: {
+        list: async () => ({ data: { items: [] } })
+      }
+    }),
+    fetchImage: async () => ({ ok: false })
+  });
+
+  assert.equal(context.transcript, '');
+  assert.equal(context.thumbnail, null);
+});
+
 test('updates metadata and publishes while preserving the existing made-for-kids declaration', async () => {
   let updateRequest;
   await updateChannelVideoMetadata('UCchannel', {
